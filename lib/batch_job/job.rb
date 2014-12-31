@@ -75,10 +75,6 @@ module BatchJob
     # This is necessary for retrying a job.
     key :repeatable,              Boolean, default: true
 
-    # Number of records in this job
-    #   Useful when updating the UI progress bar
-    key :record_count,            Integer, default: 1
-
     # Any user supplied job parameters held in a Hash
     # All keys must be UTF-8 strings. The values can be any valid BSON type:
     #   Integer
@@ -99,10 +95,15 @@ module BatchJob
     # This job is assigned_to, or was processed by this server
     key :assigned_to,             String
 
+    # Allow the worker to set how far it is in the job
+    # Any integer from 0 to 100
+    key :percent_complete,        Integer
+
     after_create  :create_status
     after_destroy :destroy_status
 
-    validates_presence_of :tracking_number, :state, :priority, :record_count
+    validates_presence_of :tracking_number, :state, :priority
+    validates :percent_complete, inclusion: 0..100
 
     # State Machine events and transitions
     #
@@ -144,11 +145,9 @@ module BatchJob
       event :start do
         after do
           self.started_at = Time.now
-          # TODO change to find_and_modify() to prevent contention
           set(state: state, started_at: started_at)
           UserMailer.batch_job_started(self).deliver if email_addresses.present?
-          # Update UI Job status
-          set_status('message' => "Started loading records at #{started_at.in_time_zone('EST')}", 'num' => 0, 'total' => record_count, 'status' => 'working')
+          update_ui_status
         end
         transitions from: :queued, to: :running
       end
@@ -158,28 +157,37 @@ module BatchJob
           self.completed_at = Time.now
           set(state: state, completed_at: completed_at)
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
-          # Update UI Job status
-          set_status('message' => "Processed #{record_count} record(s) in #{"%.2f" % (Time.now - started_at)} seconds at #{completed_at.in_time_zone('EST')}", 'num' => record_count, 'total' => record_count, 'status' => 'completed')
+          update_ui_status
         end
         transitions from: :running, to: :completed
       end
 
       event :pause do
         after do
-          set(state: state)
+          self.completed_at = Time.now
+          set(state: state, completed_at: completed_at)
           UserMailer.batch_job_paused(self).deliver if email_addresses.present?
-          # publish_pause
-          set_status('message' => "Paused at #{Time.now.in_time_zone('EST')}", 'num' => results_collection.count, 'total' => record_count, 'status' => 'failed')
+          update_ui_status
+        end
+        transitions from: :running, to: :paused
+      end
+
+      event :resume do
+        after do
+          self.completed_at = nil
+          set(state: state, completed_at: completed_at)
+          UserMailer.batch_job_resumed(self).deliver if email_addresses.present?
+          update_ui_status
         end
         transitions from: :running, to: :paused
       end
 
       event :abort do
         after do
+          self.completed_at = Time.now
           set(state: state)
           UserMailer.batch_job_aborted(self).deliver if email_addresses.present?
-          # publish_abort
-          set_status('message' => "Aborted at #{Time.now.in_time_zone('EST')}", 'num' => results_collection.count, 'total' => record_count, 'status' => 'killed')
+          update_ui_status
         end
         transitions from: :running, to: :aborted
         transitions from: :queued, to: :aborted
@@ -198,28 +206,34 @@ module BatchJob
       SharedStorage.connection
     end
 
-    # Returns [Integer] percent of records completed so far
-    # Returns nil if the total record count has not yet been set
-    def percent_complete
-      completed? ? 100 : 0
-    end
-
-    # Returns Hash of the current status of this job
-    def status
-      {
+    # Returns [Hash] status of this job
+    def status(time_zone='EST')
+      h = {
         state:                state,
-        percent_complete:     percent_complete,
-        started_at:           started_at.in_time_zone('EST'),
-        completed_at:         completed? ? completed_at.in_time_zone('EST') : nil,
-        seconds:              completed? ? (completed_at - started_at) : (Time.now - started_at),
-        record_count:         record_count,
+        description:          description
       }
-    end
+      h[:started_at]         = started_at.in_time_zone(time_zone) if started_at
 
-    # Updates the processed count in the status UI if the record_count has been set
-    def update_processed_count
-      return unless record_count.to_i > 0
-      Resque::Plugins::Status::Hash.set(tracking_number, 'name' => description, 'message' => "Started at #{started_at.in_time_zone('EST')}", 'num' => results_collection.count, 'total' => record_count, 'status' => 'working')
+      case
+      when running? || paused?
+        h[:status]           = running? ? "Started at #{started_at.in_time_zone(time_zone)}" : "Paused at #{completed_at.in_time_zone(time_zone)}"
+        h[:seconds]          = Time.now - started_at
+        h[:paused_at]        = completed_at.in_time_zone(time_zone) if paused?
+        h[:percent_complete] = percent_complete if percent_complete
+      when completed?
+        h[:seconds]          = completed_at - started_at
+        h[:status]           = "Completed at #{completed_at.in_time_zone(time_zone)}"
+        h[:completed_at]     = completed_at.in_time_zone(time_zone)
+      when queued?
+        h[:wait_seconds]     = Time.now - started_at
+        h[:status]           = "Queued for #{h[:wait_seconds]} seconds"
+      when aborted?
+        h[:status]           = "Aborted at #{completed_at.in_time_zone(time_zone)}"
+        h[:aborted_at]       = completed_at.in_time_zone(time_zone)
+        h[:percent_complete] = percent_complete if percent_complete
+      else
+        h[:status]           = "Unknown job state: #{state}"
+      end
     end
 
     # Add support for MongoMapper
@@ -239,15 +253,36 @@ module BatchJob
     end
 
     # Same basic formula for calculating retry interval as delayed_job and Sidekiq
-    # TODO Consider lowering the priority automatically for a retry?
+    # TODO Consider lowering the priority automatically after every retry?
     def seconds_to_delay(count)
       (count ** 4) + 15 + (rand(30)*(count+1))
     end
 
-    # Update UI Status
-    def set_status(h)
-      h.merge('name' => description)
-      Resque::Plugins::Status::Hash.set(tracking_number, h)
+    # Hijack the Resque Status UI until BatchJob gets it's own
+    def update_ui_status
+      resque_status = case
+      when completed?
+        'completed'
+      when paused?
+        'failed'
+      when aborted?
+        'killed'
+      when queued?
+        'queued'
+      else
+        'working'
+      end
+
+      h = self.status
+
+      resque_status = {
+        'message' => h[:message],
+        'num'     => completed? ? 100 : (percent_complete || 0),
+        'total'   => 100,
+        'name'    => h[:description],
+        'status'  => resque_status
+      }
+      Resque::Plugins::Status::Hash.set(tracking_number, resque_status)
     end
 
     private

@@ -5,11 +5,17 @@ module BatchJob
   # When jobs consists of multiple records that will be held in a separate
   # collection for processing
   class MultiRecordJob < Job
+    # Number of records in this job
+    #   Useful when updating the UI progress bar
+    key :record_count,            Integer, default: 0
+
     # Whether to store results in a separate collection, or to discard any results
     # returned when records were processed
     key :collect_results,         Boolean, default: false
 
     after_destroy :cleanup_records
+
+    validates_presence_of :record_count
 
     # State Machine events and transitions
     #
@@ -136,7 +142,7 @@ module BatchJob
     def percent_complete
       return 100 if completed?
       return 0 unless record_count > 0
-      ((results_collection.count.to_f / record_count) * 100).to_i
+      ((results_collection.count.to_f / record_count) * 100).round
     end
 
     # Returns [true|false] whether the entire job has been completely processed
@@ -145,48 +151,22 @@ module BatchJob
       active? && (record_count.to_i > 0) && (records_collection.count == 0) && (results_collection.count == record_count)
     end
 
-    # Returns Hash of the current status of this job
-    def status
-      super.merge!(
-        queued:               records_collection.count,
-        processed:            completed? ? record_count : results_collection.count,
-        processed_per_hour:   completed? ? ((record_count / (completed_at - started_at)) * 60 * 60).round : ((results_collection.count / (Time.now - started_at)) * 60 * 60).round,
-        hours:                (completed_at - started_at) / 60 / 60
-      )
-    end
-
-    # Updates the processed count in the status UI if the record_count has been set
-    def update_processed_count
-      return unless record_count.to_i > 0
-      Resque::Plugins::Status::Hash.set(tracking_number, 'name' => description, 'message' => "Started at #{started_at.in_time_zone('EST')}", 'num' => results_collection.count, 'total' => record_count, 'status' => 'working')
-    end
-
-    # Add support for MongoMapper
-    def aasm_read_state
-      state
-    end
-
-    # may be overwritten by persistence mixins
-    def aasm_write_state(new_state)
-      self.state = new_state
-      save!
-    end
-
-    # may be overwritten by persistence mixins
-    def aasm_write_state_without_persistence(new_state)
-      self.state = new_state
-    end
-
-    # Same basic formula for calculating retry interval as delayed_job and Sidekiq
-    # TODO Consider lowering the priority automatically for a retry?
-    def seconds_to_delay(count)
-      (count ** 4) + 15 + (rand(30)*(count+1))
-    end
-
-    # Add record status in Status UI
-    def set_status(h)
-      h.merge('name' => description)
-      Resque::Plugins::Status::Hash.set(tracking_number, h)
+    # Returns [Hash] status of this job
+    def status(time_zone='EST')
+      h = super(time_zone)
+      case
+      when running? || paused?
+        h[:queued]           = records_collection.count,
+        h[:processed]        = results_collection.count
+        h[:record_count]     = record_count
+        h[:rate_per_hour]    = ((results_collection.count / (Time.now - started_at)) * 60 * 60).round
+        h[:percent_complete] = ((results_collection.count.to_f / record_count) * 100).to_i
+      when completed?
+        h[:rate_per_hour]    = ((record_count / h[:seconds]) * 60 * 60).round
+        h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:rate_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
+        h[:processed]        = record_count
+        h[:record_count]     = record_count
+      end
     end
 
     private
