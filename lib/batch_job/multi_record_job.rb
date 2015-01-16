@@ -23,6 +23,24 @@ module BatchJob
     #   :queued -> :loading -> :processing -> :finishing -> :completed
     #
 
+    # Use a separate Mongo connection for the Records and Results
+    # Allows the records and results to be stored in a separate Mongo database
+    # from the Jobs themselves.
+    #
+    # It is recommended to set the work_connection to a local Mongo Server that
+    # is not replicated to another data center to prevent flooding the network
+    # with replication of data records and results.
+    # The jobs themselves can/should be replicated across data centers so that
+    # they are never lost.
+    def self.work_connection=(work_connection)
+      @@work_connection = work_connection
+    end
+
+    # Returns the Mongo connection for the Records and Results
+    def self.work_connection
+      @@work_connection || self.connection
+    end
+
     # Returns [true|false] whether to collect the results from running this batch
     def collect_results?
       collect_results == true
@@ -129,12 +147,12 @@ module BatchJob
 
     # Returns the Mongo Collection for the records queue name
     def records_collection
-      @records_collection ||= WorkingStorage::Work.with_collection("batch_job_records_#{tracking_number}")
+      @records_collection ||= self.class.work_connection.db["batch_job_records_#{id.to_s}"]
     end
 
     # Returns the Mongo Collection for the records queue name
     def results_collection
-      @results_collection ||= WorkingStorage::Work.with_collection("batch_job_results_#{tracking_number}")
+      @results_collection ||= self.class.work_connection.db["batch_job_results_#{id.to_s}"]
     end
 
     # Returns [Integer] percent of records completed so far
@@ -167,6 +185,7 @@ module BatchJob
         h[:processed]        = record_count
         h[:record_count]     = record_count
       end
+      h
     end
 
     private

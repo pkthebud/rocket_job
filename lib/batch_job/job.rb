@@ -1,6 +1,10 @@
 require 'aasm'
 # Re-use just the Resque Status UI
-require 'resque/plugins/status/hash'
+begin
+  require 'resque/plugins/status/hash'
+rescue LoadError
+end
+
 module BatchJob
   # Batch Job identifies each batch job submission
   #
@@ -28,41 +32,31 @@ module BatchJob
     include AASM
 
     # Stored centrally with data replicated between data centers
-    set_database_name   "shared_#{Rails.env}" unless Rails.env.development? || Rails.env.test?
+    #set_database_name   "shared_#{Rails.env}" unless Rails.env.development? || Rails.env.test?
 
-    # Unique tracking number to identify this batch job (primary key)
-    key :tracking_number,         String, default: -> { Clarity.random_tracking_number }
+    #
+    # User defined attributes
+    #
+
+    # Description for this job instance
     key :description,             String
 
-    # When the job was created
-    key :created_at,              Time, default: -> { Time.now }
-    # When processing started on this job
-    key :started_at,              Time
-    # When the job completed processing
-    key :completed_at,            Time
+    # Priority of this job as it relates to other jobs [1..100]
+    #   1: Lowest Priority
+    # 100: Highest Priority
+    #  50: Default Priority
+    key :priority,                Integer, default: 50
+
     # Support running this job in the future
-    #  Also set when a job fails and needs to be re-tried in the future
+    #   Also set when a job fails and needs to be re-tried in the future
     key :run_at,                  Time
 
-    # Number of times that this job has been retried
-    key :retry_count,             Integer, Default: 0
-
-    # Once a job is complete it should expire after set timeframe
-    # TODO Or can Mongo use :completed_at + some timeframe?
+    # If a job has not started by this time, destroy it
     key :expires_at,              Time
 
     # When specified a job will be re-scheduled to run at it's next scheduled interval
     # Format is the same as cron
     key :schedule,                String
-
-    # Priority of this job as it relates to other jobs [0..99]
-    #   0: Lowest Priority
-    #  99: Highest Priority
-    #  50: Default Priority
-    key :priority,                Integer, default: 50
-
-    # Current state, as set by AASM
-    key :state,                   Symbol, default: :queued
 
     # If present an email will be sent to these addresses when the job completes or is aborted
     # For multi-record jobs an email is also sent when the job starts
@@ -74,6 +68,9 @@ module BatchJob
     # before processing the record to ensure it was not previously processed.
     # This is necessary for retrying a job.
     key :repeatable,              Boolean, default: true
+
+    # When the job completes destroy it from both the database and the UI
+    key :destroy_on_completion,   Boolean, default: false
 
     # Any user supplied job parameters held in a Hash
     # All keys must be UTF-8 strings. The values can be any valid BSON type:
@@ -92,17 +89,44 @@ module BatchJob
     # Note: Date is not supported, convert it to a UTC time
     key :parameters,              Hash,    default: {}
 
+    # Only give access through the Web UI to this group identifier
+    key :group,                   String
+
+    #
+    # Read-only attributes
+    #
+
+    # Current state, as set by AASM
+    key :state,                   Symbol, default: :queued
+
+    # When the job was created
+    key :created_at,              Time, default: -> { Time.now }
+
+    # When processing started on this job
+    key :started_at,              Time
+
+    # When the job completed processing
+    key :completed_at,            Time
+
+    # Number of times that this job has been retried
+    key :retry_count,             Integer, default: 0
+
     # This job is assigned_to, or was processed by this server
     key :assigned_to,             String
 
+    #
+    # Values that jobs can update during processing
+    #
+
     # Allow the worker to set how far it is in the job
     # Any integer from 0 to 100
-    key :percent_complete,        Integer
+    # For Multi-record jobs do not set this value directly
+    key :percent_complete,        Integer, default: 0
 
     after_create  :create_status
     after_destroy :destroy_status
 
-    validates_presence_of :tracking_number, :state, :priority
+    validates_presence_of :state, :priority, :retry_count, :created_at, :percent_complete
     validates :percent_complete, inclusion: 0..100
 
     # State Machine events and transitions
@@ -194,16 +218,10 @@ module BatchJob
       end
     end
 
-    # Create capped collection and indexes
+    # Create indexes
     def self.create_indexes
       # Create indexes
-      ensure_index [[:tracking_number, 1]], background: true, unique: true
       ensure_index [[:state, 1], [:priority, 1]], background: true
-    end
-
-    # Use the working storage connection
-    def self.connection
-      SharedStorage.connection
     end
 
     # Returns [Hash] status of this job
@@ -225,8 +243,8 @@ module BatchJob
         h[:status]           = "Completed at #{completed_at.in_time_zone(time_zone)}"
         h[:completed_at]     = completed_at.in_time_zone(time_zone)
       when queued?
-        h[:wait_seconds]     = Time.now - started_at
-        h[:status]           = "Queued for #{h[:wait_seconds]} seconds"
+        h[:wait_seconds]     = Time.now - created_at
+        h[:status]           = "Queued for #{"%.2f" % h[:wait_seconds]} seconds"
       when aborted?
         h[:status]           = "Aborted at #{completed_at.in_time_zone(time_zone)}"
         h[:aborted_at]       = completed_at.in_time_zone(time_zone)
@@ -234,22 +252,25 @@ module BatchJob
       else
         h[:status]           = "Unknown job state: #{state}"
       end
+      h
     end
 
-    # Add support for MongoMapper
-    def aasm_read_state
-      state
-    end
+    # Add AASM support for MongoMapper
+    if AASM::VERSION.to_f <= 4.0
+      def aasm_read_state
+        state
+      end
 
-    # may be overwritten by persistence mixins
-    def aasm_write_state(new_state)
-      self.state = new_state
-      save!
-    end
+      # may be overwritten by persistence mixins
+      def aasm_write_state(new_state)
+        self.state = new_state
+        save!
+      end
 
-    # may be overwritten by persistence mixins
-    def aasm_write_state_without_persistence(new_state)
-      self.state = new_state
+      # may be overwritten by persistence mixins
+      def aasm_write_state_without_persistence(new_state)
+        self.state = new_state
+      end
     end
 
     # Same basic formula for calculating retry interval as delayed_job and Sidekiq
@@ -282,19 +303,21 @@ module BatchJob
         'name'    => h[:description],
         'status'  => resque_status
       }
-      Resque::Plugins::Status::Hash.set(tracking_number, resque_status)
+      Resque::Plugins::Status::Hash.set(id.to_s, resque_status) if defined?(Resque::Plugins::Status::Hash)
     end
 
     private
 
+    @@work_connection = nil
+
     # Delete Status from UI if job is destroyed
     def destroy_status
-      Resque::Plugins::Status::Hash.remove(tracking_number)
+      Resque::Plugins::Status::Hash.remove(id.to_s) if defined?(Resque::Plugins::Status::Hash)
     end
 
     # Create UI Job status
     def create_status
-      Resque::Plugins::Status::Hash.create(tracking_number, 'name' => description, 'message' => "Queued as of #{Time.now.in_time_zone('EST')}", 'status' => 'queued')
+      Resque::Plugins::Status::Hash.create(id.to_s, 'name' => description, 'message' => "Queued as of #{Time.now.in_time_zone('EST')}", 'status' => 'queued') if defined?(Resque::Plugins::Status::Hash)
     end
   end
 end
