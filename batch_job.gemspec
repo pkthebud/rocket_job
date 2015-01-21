@@ -13,7 +13,7 @@ Gem::Specification.new do |s|
   s.email       = ['reidmo@gmail.com']
   s.homepage    = 'https://github.com/reidmorrison/batch_job'
   s.summary     = "High volume, priority based, Enterprise Batch Processing solution for Ruby"
-  s.description = "Designed for batch processing from single records and sclases up to millions of records in a single batch"
+  s.description = "Designed for batch processing from single records to millions of records in a single batch. Uses threading instead of process forking for greater throughtput."
   s.files       = Dir["lib/**/*", "LICENSE.txt", "Rakefile", "README.md"]
   s.test_files  = Dir["test/**/*"]
   s.license     = "Apache License V2.0"
@@ -23,4 +23,5 @@ Gem::Specification.new do |s|
   s.add_dependency 'mongo_ha', '~> 1.11'
   s.add_dependency 'mongo', '~> 1.11'
   s.add_dependency 'mongo_mapper', '~> 0.13'
+  s.add_dependency 'symmetric-encryption', '~> 3.0'
 end

@@ -1,3 +1,4 @@
+# encoding: UTF-8
 module BatchJob
   #
   # Multi-record jobs
@@ -12,6 +13,16 @@ module BatchJob
     # Whether to store results in a separate collection, or to discard any results
     # returned when records were processed
     key :collect_results,         Boolean, default: false
+
+    # Compress all working data
+    # The parameters are not affected in any way, just the data stored in the
+    # records and results collections will compressed
+    key :compress,                Boolean, default: true
+
+    # Encrypt all working data
+    # The parameters are not affected in any way, just the data stored in the
+    # records and results collections will be encrypted
+    key :encrypt,                 Boolean, default: false
 
     after_destroy :cleanup_records
 
@@ -113,13 +124,108 @@ module BatchJob
 
     # Add many records for processing at the same time.
     # Returns [Range<Integer>] range of the record_ids that were added
+    #
     # Note:
-    #   Not thread-safe. Only call from one thread at a time
+    #   Not thread-safe. Only call from one thread at a time per job instance
     def add_records(records)
       count = record_count
       bulk  = records_collection.initialize_ordered_bulk_op
       records.each { |data| bulk.insert('_id' => (count += 1), 'data' => data) }
       bulk.execute
+
+      result = (self.record_count + 1 .. count)
+      self.record_count = count
+      result
+    end
+
+    # Add records for processing by reading the supplied text stream
+    #
+    # Parameters
+    #   io_stream [IO]
+    #     IO Stream that responds to: :read, :eof?
+    #
+    #   options:
+    #     block_size
+    #       Number of lines to include in each record
+    #       Default: 10
+    #
+    #     delimeter[Symbol|String]
+    #       Record delimeter to use to break the stream up
+    #         nil
+    #           Automatically detect line endings and break up by line
+    #         String:
+    #           Any string to break the stream up by
+    #           The records when saved will not include this delimiter
+    #       Default: nil
+    #
+    #     buffer_size [Integer]
+    #       Maximum size of the buffer into which to read the stream into for
+    #       processing.
+    #       Must be large enough to hold the entire first line and its delimiter(s)
+    #       Default: 65536 ( 64K )
+    #
+    # Notes:
+    # * Only use this method for UTF-8 data, for binary data use #<< or #add_records
+    # * Not thread-safe. Only call from one thread at a time per job instance
+    # * All data is converted by this method to UTF-8 since that is how strings
+    #   are stored in MongoDB
+    def add_text_stream(io_stream, options={})
+      options = options.dup
+      block_size  = options.delete(:block_size) || 10
+      delimiter   = options.delete(:delimiter)
+      buffer_size = options.delete(:buffer_size) || 65536
+      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecordJob#add_records option: #{option.inspect}" }
+
+      delimiter.force_encoding(UTF8_ENCODING) if delimiter
+
+      batch_count = 0
+      end_index   = nil
+      record      = []
+      count       = record_count
+      buffer      = ''
+      loop do
+        partial = ''
+        # TODO Add optional data cleansing to strip out for example non-printable
+        # characters before converting to UTF-8
+        buffer << io_stream.read(buffer_size).force_encoding(UTF8_ENCODING)
+        if delimiter.nil?
+          # Auto detect text line delimiter
+          if buffer =~ /"\r\n?|\n"/
+            delimiter = $&
+          else
+            # TODO Add custom Exception
+            raise "Malformed data. Could not find \\r\\n or \\n within the buffer_size of #{buffer_size}. Read #{buffer.size} bytes from stream"
+          end
+        end
+
+        # Collect 'block_size' lines and write to mongo as a single record
+        buffer.each_line(delimiter) do |line|
+          if line.end_with?(delimiter)
+            # Strip off delimiter when placing in record array
+            record << line[0..(end_index ||= (delimiter.size + 1) * -1)]
+          else
+            # The last line in the buffer could be incomplete
+            partial = line
+          end
+          batch_count += 1
+          if batch_count >= block_size
+            # Write to Mongo
+            records_collection.insert('_id' => (count += 1), 'data' => record)
+            # TODO Compression and encryption - Delimiter?
+            # TODO Use Mongo bulk insert API, based on size
+            batch_count = 0
+            record.clear
+          end
+        end
+        buffer = partial
+        break if io_stream.eof?
+      end
+
+      # Add last line since it may not have been terminated with the delimiter
+      record << partial if partial.size > 0
+
+      # Write partial record to Mongo
+      records_collection.insert('_id' => (count += 1), 'data' => record) if record.size > 0
 
       result = (self.record_count + 1 .. count)
       self.record_count = count
@@ -139,8 +245,22 @@ module BatchJob
     def each_result(destructive=false, &block)
       results_collection.find({}, sort: '_id', timeout: false) do |cursor|
         cursor.each do |record|
+          # TODO Support encryption and/or compression
           block.call(record.delete('data'), record)
           results_collection.remove(record['_id']) if destructive
+        end
+      end
+    end
+
+    # Write the results to the supplied stream
+    #   stream [IO]
+    #     An IO stream to which to write all the results to
+    #     Must respond to :write
+    def write_results(stream)
+      results_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each do |record|
+          # TODO Support encryption and/or compression
+          stream.write(record['data'])
         end
       end
     end
@@ -175,7 +295,7 @@ module BatchJob
       case
       when running? || paused?
         h[:queued]           = records_collection.count,
-        h[:processed]        = results_collection.count
+          h[:processed]        = results_collection.count
         h[:record_count]     = record_count
         h[:rate_per_hour]    = ((results_collection.count / (Time.now - started_at)) * 60 * 60).round
         h[:percent_complete] = ((results_collection.count.to_f / record_count) * 100).to_i
@@ -190,10 +310,13 @@ module BatchJob
 
     private
 
+    UTF8_ENCODING = Encoding.find("UTF-8").freeze
+
     # Drop the records collection
     def cleanup_records
       records_collection.drop
       results_collection.drop
     end
+
   end
 end
