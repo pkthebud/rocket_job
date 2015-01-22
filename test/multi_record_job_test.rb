@@ -139,21 +139,29 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a one line stream with no delimiter' do
         str = "hello"
         stream = StringIO.new(str)
-        assert_raises RuntimeError do
-          @job.add_text_stream(stream)
-        end
+        @job.add_text_stream(stream)
+        assert_equal 1, @job.records_collection.count
+        assert_equal [str], @job.records_collection.find_one['data']
       end
 
-      should 'handle a small stream' do
+      should 'handle last line ending with a delimiter' do
+        str = @array.join("\r\n")
+        str << "\r\n"
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+        assert_equal 1, @job.records_collection.count
+        assert_equal @array, @job.records_collection.find_one['data']
+      end
+
+      should 'handle a block size of 1' do
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1)
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        assert_equal @array.first, @job.records_collection.find_one['data']
       end
 
       should 'handle a small stream the same size as block_size' do
-      end
-
-      should 'handle a small stream ending with a delimiter' do
-      end
-
-      should 'handle a small stream ending with no delimiter' do
       end
 
       should 'handle a custom 1 character delimiter' do

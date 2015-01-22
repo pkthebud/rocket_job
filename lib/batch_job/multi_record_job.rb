@@ -116,14 +116,17 @@ module BatchJob
     end
 
     # Returns the record id for the added record
+    #
     # Parameters
-    #   `data` [ Hash | Array | String | Integer | Float | Symbol | Regexp | Time ]
-    #     All elements in `data` must be serializable to BSON
+    #   `array` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
+    #     All elements in `array` must be serializable to BSON
     #     For example the following types are not supported: Date
     # Note:
     #   Not thread-safe. Only call from one thread at a time
-    def <<(data)
+    def <<(array)
+      data = compress_data(array)
       records_collection.insert('_id' => record_count + 1, 'data' => data)
+      logger.trace('#<< Add record') { data }
       # Only increment record_count once the job has been saved
       self.record_count += 1
     end
@@ -201,6 +204,9 @@ module BatchJob
           # Auto detect text line delimiter
           if buffer =~ /\r\n?|\n/
             delimiter = $&
+          elsif buffer.size <= buffer_size
+            # Handle one line files that are smaller than the buffer size
+            delimiter = "\n"
           else
             # TODO Add custom Exception
             raise "Malformed data. Could not find \\r\\n or \\n within the buffer_size of #{buffer_size}. Read #{buffer.size} bytes from stream"
@@ -214,13 +220,13 @@ module BatchJob
             record << line[0..(end_index ||= (delimiter.size + 1) * -1)]
           else
             # The last line in the buffer could be incomplete
+            logger.trace('#add_text_stream partial data') { line }
             partial = line
           end
           batch_count += 1
           if batch_count >= block_size
             # Write to Mongo
-            records_collection.insert('_id' => (count += 1), 'data' => compress_data(record))
-            logger.trace('#add_text_stream write to mongo records collection')
+            self << record
             batch_count = 0
             record.clear
           end
@@ -233,15 +239,10 @@ module BatchJob
       record << buffer if buffer.size > 0
 
       # Write partial record to Mongo
-      if record.size > 0
-        records_collection.insert('_id' => (count += 1), 'data' => compress_data(record))
-        logger.trace('#add_text_stream write remaining buffer to mongo records collection')
-      end
+      self << record if record.size > 0
 
-      result = (self.record_count + 1 .. count)
-      self.record_count = count
-      logger.debug { "#add_text_stream succesfully broke up the input stream into #{count} records" }
-      result
+      logger.debug { "#add_text_stream Added #{count - self.record_count} records" }
+      (count .. self.record_count)
     end
 
     # Iterate over each record
