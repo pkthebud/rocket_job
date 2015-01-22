@@ -31,6 +31,7 @@ module BatchJob
   class Job
     include MongoMapper::Document
     include AASM
+    include SemanticLogger::Loggable
 
     # Stored centrally with data replicated between data centers
     #set_database_name   "shared_#{Rails.env}" unless Rails.env.development? || Rails.env.test?

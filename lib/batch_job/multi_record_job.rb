@@ -193,10 +193,13 @@ module BatchJob
         partial = ''
         # TODO Add optional data cleansing to strip out for example non-printable
         # characters before converting to UTF-8
-        buffer << io_stream.read(buffer_size).force_encoding(UTF8_ENCODING)
+        block = io_stream.read(buffer_size)
+        logger.trace('#add_text_stream read from input stream:') { block.inspect }
+        break unless block
+        buffer << block.force_encoding(UTF8_ENCODING)
         if delimiter.nil?
           # Auto detect text line delimiter
-          if buffer =~ /"\r\n?|\n"/
+          if buffer =~ /\r\n?|\n/
             delimiter = $&
           else
             # TODO Add custom Exception
@@ -216,9 +219,8 @@ module BatchJob
           batch_count += 1
           if batch_count >= block_size
             # Write to Mongo
-            records_collection.insert('_id' => (count += 1), 'data' => record)
-            # TODO Compression and encryption - Delimiter?
-            # TODO Use Mongo bulk insert API, based on size
+            records_collection.insert('_id' => (count += 1), 'data' => compress_data(record))
+            logger.trace('#add_text_stream write to mongo records collection')
             batch_count = 0
             record.clear
           end
@@ -228,13 +230,17 @@ module BatchJob
       end
 
       # Add last line since it may not have been terminated with the delimiter
-      record << partial if partial.size > 0
+      record << buffer if buffer.size > 0
 
       # Write partial record to Mongo
-      records_collection.insert('_id' => (count += 1), 'data' => record) if record.size > 0
+      if record.size > 0
+        records_collection.insert('_id' => (count += 1), 'data' => compress_data(record))
+        logger.trace('#add_text_stream write remaining buffer to mongo records collection')
+      end
 
       result = (self.record_count + 1 .. count)
       self.record_count = count
+      logger.debug { "#add_text_stream succesfully broke up the input stream into #{count} records" }
       result
     end
 

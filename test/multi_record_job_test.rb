@@ -83,5 +83,126 @@ class MultiRecordJobTest < Minitest::Test
       end
     end
 
+    context '#add_text_stream' do
+      setup do
+        @array = [
+          'this is some',
+          'data',
+          'that we can delimit',
+          'as necessary'
+        ]
+        @job = BatchJob::MultiRecordJob.create(
+          collect_results: true,
+          repeatable:      true,
+        )
+      end
+
+      teardown do
+        @job.destroy if @job && !@job.new_record?
+      end
+
+      should 'handle empty streams' do
+        str = ""
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+        assert_equal 0, @job.records_collection.count
+      end
+
+      should 'handle a stream consisting only of the delimiter' do
+        str = "\n"
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+        assert_equal 1, @job.records_collection.count
+        assert_equal [''], @job.records_collection.find_one['data']
+      end
+
+      should 'handle a linux stream' do
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+        assert_equal 1, @job.records_collection.count
+        assert_equal @array, @job.records_collection.find_one['data']
+      end
+
+      should 'handle a windows stream' do
+        str = @array.join("\r\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+      end
+
+      should 'handle a one line stream with a delimiter' do
+        str = "hello\r\n"
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream)
+      end
+
+      should 'handle a one line stream with no delimiter' do
+        str = "hello"
+        stream = StringIO.new(str)
+        assert_raises RuntimeError do
+          @job.add_text_stream(stream)
+        end
+      end
+
+      should 'handle a small stream' do
+      end
+
+      should 'handle a small stream the same size as block_size' do
+      end
+
+      should 'handle a small stream ending with a delimiter' do
+      end
+
+      should 'handle a small stream ending with no delimiter' do
+      end
+
+      should 'handle a custom 1 character delimiter' do
+      end
+
+      should 'handle a custom multi-character delimiter' do
+      end
+
+      should 'compress records' do
+        #assert_equal @array.join(@job.compress_delimiter), @job.records_collection.find_one['data']
+      end
+
+      should 'encrypt records' do
+      end
+
+      should 'compress and encrypt records' do
+      end
+
+    end
+
+    context '#write_results' do
+      should 'handle no results' do
+      end
+
+      should 'handle 1 result' do
+      end
+
+      should 'handle many results' do
+      end
+
+      should 'decompress results' do
+      end
+
+      should 'decrypt results' do
+      end
+
+      should 'decompress & decrypt results' do
+      end
+
+    end
+
+    context '.config' do
+      should 'support multiple databases' do
+        assert_equal 'test_batch_job', BatchJob::MultiRecordJob.collection.db.name
+        job = BatchJob::MultiRecordJob.new
+        assert_equal 'test_batch_job_work', job.records_collection.db.name
+        assert_equal 'test_batch_job_work', job.results_collection.db.name
+      end
+    end
+
   end
 end
