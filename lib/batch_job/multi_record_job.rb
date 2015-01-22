@@ -1,4 +1,5 @@
 # encoding: UTF-8
+require 'zlib'
 module BatchJob
   #
   # Multi-record jobs
@@ -17,12 +18,17 @@ module BatchJob
     # Compress all working data
     # The parameters are not affected in any way, just the data stored in the
     # records and results collections will compressed
-    key :compress,                Boolean, default: true
+    key :compress,                Boolean, default: false
 
     # Encrypt all working data
     # The parameters are not affected in any way, just the data stored in the
     # records and results collections will be encrypted
     key :encrypt,                 Boolean, default: false
+
+    # When compressing or encrypting multiple lines within a single record the
+    # array needs to be converted back to a string. The delimiter used to join
+    # and then split apart the array is:
+    key :compress_delimiter,      String, default: '|@|'
 
     after_destroy :cleanup_records
 
@@ -235,20 +241,14 @@ module BatchJob
     # Iterate over each record
     def each_record(&block)
       records_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| block.call(record.delete('data'), record) }
+        cursor.each { |record| block.call(extract_data(record), record) }
       end
     end
 
     # Iterate over each result
-    #   destructive
-    #     Delete each record after it is successfully processed by the block
-    def each_result(destructive=false, &block)
+    def each_result(&block)
       results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each do |record|
-          # TODO Support encryption and/or compression
-          block.call(record.delete('data'), record)
-          results_collection.remove(record['_id']) if destructive
-        end
+        cursor.each { |record| block.call(extract_data(record), record) }
       end
     end
 
@@ -256,12 +256,14 @@ module BatchJob
     #   stream [IO]
     #     An IO stream to which to write all the results to
     #     Must respond to :write
+    #
+    # Notes:
+    # * Remember to close the stream after calling #write_results since
+    #   #write_results does not close the stream after all results have
+    #   been written
     def write_results(stream)
       results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each do |record|
-          # TODO Support encryption and/or compression
-          stream.write(record['data'])
-        end
+        cursor.each { |record| stream.write(extract_data(record, false)) }
       end
     end
 
@@ -311,6 +313,40 @@ module BatchJob
     private
 
     UTF8_ENCODING = Encoding.find("UTF-8").freeze
+
+    # Returns [Array<String>] The decompressed / un-encrypted data string if applicable
+    # All strings within the Array will encoded to UTF-8 for consistency across
+    # plain, compressed and encrypted
+    def extract_data(record, destructive=true)
+      data = destructive ? record.delete('data') : record['data']
+      if encrypt || compress
+        str = if encrypt
+          SymmetricEncryption.binary_decrypt(data.to_s)
+        else compress
+          Zlib::Inflate.inflate(data.to_s).force_encoding(UTF8_ENCODING)
+        end
+        # Convert the de-compressed and/or un-encrypted string back into an array
+        data = str.split(compress_delimiter)
+      end
+      data
+    end
+
+    # Compresses / Encrypts the data according to the job setting
+    def compress_data(array)
+      if encrypt || compress
+        str = array.join(compress_delimiter)
+        if encrypt
+          # Encrypt to binary without applying an encoding such as Base64
+          # Use a random_iv with each encryption for better security
+          BSON::Binary.new(SymmetricEncryption.cipher.binary_encrypt(str, true, compress))
+        else compress
+          BSON::Binary.new(Zlib::Deflate.deflate(str))
+        end
+      else
+        # Without compression or encryption, store the array as is in Mongo
+        array
+      end
+    end
 
     # Drop the records collection
     def cleanup_records

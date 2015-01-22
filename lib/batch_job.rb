@@ -1,3 +1,4 @@
+# encoding: UTF-8
 require 'mongo'
 require 'mongo_ha'
 require 'mongo_mapper'

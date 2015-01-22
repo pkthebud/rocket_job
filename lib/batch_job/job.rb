@@ -1,5 +1,6 @@
+# encoding: UTF-8
 require 'aasm'
-# Re-use just the Resque Status UI
+# Temporarily Re-use just the Resque Status UI
 begin
   require 'resque/plugins/status/hash'
 rescue LoadError
