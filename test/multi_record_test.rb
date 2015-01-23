@@ -1,10 +1,10 @@
 require File.join(File.dirname(__FILE__), 'test_helper')
 
-# Unit Test for BatchJob::MultiRecordJob
+# Unit Test for BatchJob::MultiRecord
 class MultiRecordJobTest < Minitest::Test
-  context BatchJob::MultiRecordJob do
+  context BatchJob::MultiRecord do
     setup do
-      BatchJob::MultiRecordJob.destroy_all
+      BatchJob::MultiRecord.destroy_all
       @data = [
         [ 'col1',  'col2',   'col3' ],
         [ 'vala1', 'vala2', 'vala3' ],
@@ -12,7 +12,7 @@ class MultiRecordJobTest < Minitest::Test
         [ 'valc1', 'valc2', 'valc3' ],
       ]
       @description = 'Hello World'
-      @job = BatchJob::MultiRecordJob.new(
+      @job = BatchJob::MultiRecord.new(
         description: @description
       )
     end
@@ -35,15 +35,29 @@ class MultiRecordJobTest < Minitest::Test
       assert_equal @data.size, @job.records_collection.count
     end
 
-    should '#add_records' do
-      result = @job.add_records(@data)
-      assert_equal (1..4), result
+    context '#load_records' do
+      should 'support block size of 1' do
+        @job.block_size = 1
+        blocks = @data.dup
+        result = @job.load_records { blocks.shift }
+        assert_equal (1..4), result
 
-      assert_equal @data.size, @job.record_count
-      assert_equal @data.size, @job.records_collection.count
+        assert_equal @data.size, @job.record_count
+        assert_equal @data.size, @job.records_collection.count
+      end
+
+      should 'support block size of 2' do
+        @job.block_size = 2
+        blocks = @data.dup
+        result = @job.load_records { blocks.shift }
+        assert_equal (1..2), result
+
+        assert_equal @data.size / 2, @job.record_count
+        assert_equal @data.size / 2, @job.records_collection.count
+      end
     end
 
-    context '#process_records' do
+    context '#work' do
       should 'read all records' do
         @data.each { |row| @job << row }
         @job.save!
@@ -51,7 +65,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @data.size, @job.record_count
 
         count = 0
-        @job.process_records('server_name') do |data, header|
+        @job.work('server_name') do |data, header|
           assert_equal @data[count], data
           count += 1
         end
@@ -65,7 +79,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @data.size, @job.record_count
 
         count = 0
-        @job.process_records('server_name') do |data, header|
+        @job.work('server_name') do |data, header|
           count += 1
           raise 'Oh no'
         end
@@ -74,7 +88,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @data.size, @job.records_collection.count
 
         count = 0
-        #          @job.process_records('server_name', true) do |data, header|
+        #          @job.work('server_name', true) do |data, header|
         #            assert_equal @data[count], data
         #            assert_equal 1, header['retry_count']
         #            count += 1
@@ -83,7 +97,7 @@ class MultiRecordJobTest < Minitest::Test
       end
     end
 
-    context '#add_text_stream' do
+    context '#load_stream' do
       setup do
         @array = [
           'this is some',
@@ -91,7 +105,7 @@ class MultiRecordJobTest < Minitest::Test
           'that we can delimit',
           'as necessary'
         ]
-        @job = BatchJob::MultiRecordJob.create(
+        @job = BatchJob::MultiRecord.create(
           collect_results: true,
           repeatable:      true,
         )
@@ -104,14 +118,14 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle empty streams' do
         str = ""
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
         assert_equal 0, @job.records_collection.count
       end
 
       should 'handle a stream consisting only of the delimiter' do
         str = "\n"
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
         assert_equal 1, @job.records_collection.count
         @job.each_record do |record, header|
           assert_equal [''], record
@@ -121,7 +135,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a linux stream' do
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
         assert_equal 1, @job.records_collection.count
         @job.each_record do |record, header|
           assert_equal @array, record
@@ -131,19 +145,19 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a windows stream' do
         str = @array.join("\r\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
       end
 
       should 'handle a one line stream with a delimiter' do
         str = "hello\r\n"
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
       end
 
       should 'handle a one line stream with no delimiter' do
         str = "hello"
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
         assert_equal 1, @job.records_collection.count
         @job.each_record do |record, header|
           assert_equal [str], record
@@ -154,7 +168,7 @@ class MultiRecordJobTest < Minitest::Test
         str = @array.join("\r\n")
         str << "\r\n"
         stream = StringIO.new(str)
-        @job.add_text_stream(stream)
+        @job.load_stream(stream)
         assert_equal 1, @job.records_collection.count
         @job.each_record do |record, header|
           assert_equal @array, record
@@ -164,7 +178,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a block size of 1' do
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1)
+        @job.load_stream(stream, block_size: 1)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -176,7 +190,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a small stream the same size as block_size' do
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: @array.size)
+        @job.load_stream(stream, block_size: @array.size)
         assert_equal 1, @job.records_collection.count, @job.records_collection.find.to_a
         @job.each_record do |record, header|
           assert_equal @array, record
@@ -186,7 +200,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a custom 1 character delimiter' do
         str = @array.join('$')
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1, delimiter: '$')
+        @job.load_stream(stream, block_size: 1, delimiter: '$')
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -199,7 +213,7 @@ class MultiRecordJobTest < Minitest::Test
         delimiter = '$DELIMITER$'
         str = @array.join(delimiter)
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1, delimiter: delimiter)
+        @job.load_stream(stream, block_size: 1, delimiter: delimiter)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -213,7 +227,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1)
+        @job.load_stream(stream, block_size: 1)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -231,7 +245,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1)
+        @job.load_stream(stream, block_size: 1)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -250,7 +264,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @array.join("\n")
         stream = StringIO.new(str)
-        @job.add_text_stream(stream, block_size: 1)
+        @job.load_stream(stream, block_size: 1)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
@@ -265,7 +279,7 @@ class MultiRecordJobTest < Minitest::Test
 
     end
 
-    context '#write_results' do
+    context '#unload' do
       setup do
         @array = [
           'this is some',
@@ -273,7 +287,7 @@ class MultiRecordJobTest < Minitest::Test
           'that we can delimit',
           'as necessary'
         ]
-        @job = BatchJob::MultiRecordJob.create(
+        @job = BatchJob::MultiRecord.create(
           collect_results: true,
           repeatable:      true,
         )
@@ -285,33 +299,68 @@ class MultiRecordJobTest < Minitest::Test
 
       should 'handle no results' do
         stream = StringIO.new('')
-        @job.write_results(stream)
-        stream.rewind
-        assert_equal "\n", stream.to_s, stream.to_s.inspect
+        @job.unload(stream)
+        assert_equal "", stream.string, stream.string.inspect
       end
 
       should 'handle 1 result' do
         @job << [ @array.first ]
+        @job.work('worker') { |block| block }
+        stream = StringIO.new('')
+        @job.unload(stream)
+        assert_equal @array.first + "\n", stream.string, stream.string.inspect
       end
 
       should 'handle many results' do
+        @job.block_size = 1
+        blocks = @array.dup
+        result = @job.load_records { blocks.shift }
+        @job.work('worker') { |block| block }
+        stream = StringIO.new('')
+        @job.unload(stream)
+        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decompress results' do
+        @job.compress = true
+        @job.block_size = 1
+        blocks = @array.dup
+        result = @job.load_records { blocks.shift }
+        @job.work('worker') { |block| block }
+        stream = StringIO.new('')
+        @job.unload(stream)
+        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decrypt results' do
+        @job.encrypt = true
+        @job.block_size = 1
+        blocks = @array.dup
+        result = @job.load_records { blocks.shift }
+        @job.work('worker') { |block| block }
+        stream = StringIO.new('')
+        @job.unload(stream)
+        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decompress & decrypt results' do
+        @job.compress = true
+        @job.encrypt = true
+        @job.block_size = 1
+        blocks = @array.dup
+        result = @job.load_records { blocks.shift }
+        @job.work('worker') { |block| block }
+        stream = StringIO.new('')
+        @job.unload(stream)
+        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
     end
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_batch_job', BatchJob::MultiRecordJob.collection.db.name
-        job = BatchJob::MultiRecordJob.new
+        assert_equal 'test_batch_job', BatchJob::MultiRecord.collection.db.name
+        job = BatchJob::MultiRecord.new
         assert_equal 'test_batch_job_work', job.records_collection.db.name
         assert_equal 'test_batch_job_work', job.results_collection.db.name
       end

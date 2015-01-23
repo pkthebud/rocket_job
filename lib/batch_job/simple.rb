@@ -28,7 +28,7 @@ module BatchJob
   # For example a single file that contains millions of records to be processed
   # as quickly as possible without impacting other batch jobs with a higher priority.
   #
-  class Job
+  class Simple
     include MongoMapper::Document
     include AASM
     include SemanticLogger::Loggable

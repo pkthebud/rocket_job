@@ -1,12 +1,7 @@
 # encoding: UTF-8
 require 'zlib'
 module BatchJob
-  #
-  # Multi-record jobs
-  #
-  # When jobs consists of multiple records that will be held in a separate
-  # collection for processing
-  class MultiRecordJob < Job
+  class MultiRecord < Simple
     # Number of records in this job
     #   Useful when updating the UI progress bar
     key :record_count,            Integer, default: 0
@@ -29,6 +24,9 @@ module BatchJob
     # array needs to be converted back to a string. The delimiter used to join
     # and then split apart the array is:
     key :compress_delimiter,      String, default: '|@|'
+
+    # Number of records to include in each block that is processed
+    key :block_size,              Integer, default: 100
 
     after_destroy :cleanup_records
 
@@ -81,7 +79,7 @@ module BatchJob
     #     A unqiue name for this server instance
     #     Should only have one server name per machine
     #     On startup all pending jobs with this 'server_name' will be retried
-    def process_records(server_name, include_retries=false, &block)
+    def work(server_name, include_retries=false, &block)
       # find_and_modify is already in a retry block
       while record = records_collection.find_and_modify(
           query:  { 'server' => { :$exists => false }, retry_count: { :$exists => include_retries } },
@@ -115,43 +113,56 @@ module BatchJob
       end
     end
 
-    # Returns the record id for the added record
+    # Add a block of records for processing
+    # The number of records in the block should match `:block_size`
     #
     # Parameters
-    #   `array` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
+    #   `block` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
     #     All elements in `array` must be serializable to BSON
     #     For example the following types are not supported: Date
     # Note:
     #   Not thread-safe. Only call from one thread at a time
-    def <<(array)
-      data = compress_data(array)
+    def <<(block)
+      data = compress_block(block)
       records_collection.insert('_id' => record_count + 1, 'data' => data)
       logger.trace('#<< Add record') { data }
       # Only increment record_count once the job has been saved
       self.record_count += 1
     end
 
-    # Add many records for processing at the same time.
+    # Load each record returned by the supplied Block until it returns nil
+    #
+    # The records are automatically grouped into blocks based on :block_size
+    #
     # Returns [Range<Integer>] range of the record_ids that were added
     #
     # Note:
     #   Not thread-safe. Only call from one thread at a time per job instance
-    def add_records(records)
-      count = record_count
-      bulk  = records_collection.initialize_ordered_bulk_op
-      records.each { |data| bulk.insert('_id' => (count += 1), 'data' => data) }
-      bulk.execute
-
-      result = (self.record_count + 1 .. count)
-      self.record_count = count
-      result
+    def load_records(&proc)
+      before_count = record_count
+      block = []
+      loop do
+        record = proc.call
+        break if record.nil?
+        block << record
+        if block.size % block_size == 0
+          self << block
+          block = []
+        end
+      end
+      self << block if block.size > 0
+      record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
 
-    # Add records for processing by reading the supplied text stream
+    # Load records for processing from the supplied stream
+    # All data read from the stream is converted into UTF-8
+    # before being persisted.
+    #
+    # The entire stream is read until it returns nil
     #
     # Parameters
     #   io_stream [IO]
-    #     IO Stream that responds to: :read, :eof?
+    #     IO Stream that responds to: :read
     #
     #   options:
     #     block_size
@@ -178,12 +189,12 @@ module BatchJob
     # * Not thread-safe. Only call from one thread at a time per job instance
     # * All data is converted by this method to UTF-8 since that is how strings
     #   are stored in MongoDB
-    def add_text_stream(io_stream, options={})
+    def load_stream(io_stream, options={})
       options = options.dup
       block_size  = options.delete(:block_size) || 10
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
-      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecordJob#add_records option: #{option.inspect}" }
+      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#add_records option: #{option.inspect}" }
 
       delimiter.force_encoding(UTF8_ENCODING) if delimiter
 
@@ -232,7 +243,6 @@ module BatchJob
           end
         end
         buffer = partial
-        break if io_stream.eof?
       end
 
       # Add last line since it may not have been terminated with the delimiter
@@ -245,21 +255,10 @@ module BatchJob
       (count .. self.record_count)
     end
 
-    # Iterate over each record
-    def each_record(&block)
-      records_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| block.call(extract_data(record), record) }
-      end
-    end
-
-    # Iterate over each result
-    def each_result(&block)
-      results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| block.call(extract_data(record), record) }
-      end
-    end
-
-    # Write the results to the supplied stream
+    # Returns the results of all processing into the supplied stream
+    # The results are returned in the order they were originally loaded
+    # in.
+    #
     #   stream [IO]
     #     An IO stream to which to write all the results to
     #     Must respond to :write
@@ -273,12 +272,27 @@ module BatchJob
     # * Remember to close the stream after calling #write_results since
     #   #write_results does not close the stream after all results have
     #   been written
-    def write_results(stream, delimiter=$/)
+    def unload(stream, delimiter=$/)
       results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each do |record|
-          record = extract_data(record, false)
-          stream.write(record.join(delimiter))
+        cursor.each do |result|
+          block = extract_block(result, false)
+          stream.write(block.join(delimiter) + delimiter)
         end
+      end
+      stream
+    end
+
+    # Iterate over each record
+    def each_record(&block)
+      records_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each { |record| block.call(extract_block(record), record) }
+      end
+    end
+
+    # Iterate over each result
+    def each_result(&block)
+      results_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each { |record| block.call(extract_block(record), record) }
       end
     end
 
@@ -332,7 +346,7 @@ module BatchJob
     # Returns [Array<String>] The decompressed / un-encrypted data string if applicable
     # All strings within the Array will encoded to UTF-8 for consistency across
     # plain, compressed and encrypted
-    def extract_data(record, destructive=true)
+    def extract_block(record, destructive=true)
       data = destructive ? record.delete('data') : record['data']
       if encrypt || compress
         str = if encrypt
@@ -347,7 +361,7 @@ module BatchJob
     end
 
     # Compresses / Encrypts the data according to the job setting
-    def compress_data(array)
+    def compress_block(array)
       if encrypt || compress
         str = array.join(compress_delimiter)
         if encrypt
