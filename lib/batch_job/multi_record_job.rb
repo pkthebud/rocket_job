@@ -218,17 +218,17 @@ module BatchJob
           if line.end_with?(delimiter)
             # Strip off delimiter when placing in record array
             record << line[0..(end_index ||= (delimiter.size + 1) * -1)]
+            batch_count += 1
+            if batch_count >= block_size
+              # Write to Mongo
+              self << record
+              batch_count = 0
+              record.clear
+            end
           else
             # The last line in the buffer could be incomplete
             logger.trace('#add_text_stream partial data') { line }
             partial = line
-          end
-          batch_count += 1
-          if batch_count >= block_size
-            # Write to Mongo
-            self << record
-            batch_count = 0
-            record.clear
           end
         end
         buffer = partial
@@ -264,13 +264,21 @@ module BatchJob
     #     An IO stream to which to write all the results to
     #     Must respond to :write
     #
+    #   delimiter [String]
+    #     Add the specified delimiter after every record when writing it
+    #     to the output stream
+    #     Default: OS Specific. Linux: "\n"
+    #
     # Notes:
     # * Remember to close the stream after calling #write_results since
     #   #write_results does not close the stream after all results have
     #   been written
-    def write_results(stream)
+    def write_results(stream, delimiter=$/)
       results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| stream.write(extract_data(record, false)) }
+        cursor.each do |record|
+          record = extract_data(record, false)
+          stream.write(record.join(delimiter))
+        end
       end
     end
 
@@ -328,7 +336,7 @@ module BatchJob
       data = destructive ? record.delete('data') : record['data']
       if encrypt || compress
         str = if encrypt
-          SymmetricEncryption.binary_decrypt(data.to_s)
+          SymmetricEncryption.cipher.binary_decrypt(data.to_s)
         else compress
           Zlib::Inflate.inflate(data.to_s).force_encoding(UTF8_ENCODING)
         end

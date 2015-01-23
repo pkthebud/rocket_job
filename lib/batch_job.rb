@@ -3,6 +3,7 @@ require 'mongo'
 require 'mongo_ha'
 require 'mongo_mapper'
 require 'semantic_logger'
+require 'symmetric-encryption'
 require 'batch_job/version'
 
 module BatchJob

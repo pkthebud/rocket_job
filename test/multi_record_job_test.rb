@@ -113,7 +113,9 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.add_text_stream(stream)
         assert_equal 1, @job.records_collection.count
-        assert_equal [''], @job.records_collection.find_one['data']
+        @job.each_record do |record, header|
+          assert_equal [''], record
+        end
       end
 
       should 'handle a linux stream' do
@@ -121,7 +123,9 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.add_text_stream(stream)
         assert_equal 1, @job.records_collection.count
-        assert_equal @array, @job.records_collection.find_one['data']
+        @job.each_record do |record, header|
+          assert_equal @array, record
+        end
       end
 
       should 'handle a windows stream' do
@@ -141,7 +145,9 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.add_text_stream(stream)
         assert_equal 1, @job.records_collection.count
-        assert_equal [str], @job.records_collection.find_one['data']
+        @job.each_record do |record, header|
+          assert_equal [str], record
+        end
       end
 
       should 'handle last line ending with a delimiter' do
@@ -150,7 +156,9 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.add_text_stream(stream)
         assert_equal 1, @job.records_collection.count
-        assert_equal @array, @job.records_collection.find_one['data']
+        @job.each_record do |record, header|
+          assert_equal @array, record
+        end
       end
 
       should 'handle a block size of 1' do
@@ -158,35 +166,132 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.add_text_stream(stream, block_size: 1)
         assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
-        assert_equal @array.first, @job.records_collection.find_one['data']
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
       end
 
       should 'handle a small stream the same size as block_size' do
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: @array.size)
+        assert_equal 1, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.each_record do |record, header|
+          assert_equal @array, record
+        end
       end
 
       should 'handle a custom 1 character delimiter' do
+        str = @array.join('$')
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1, delimiter: '$')
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
       end
 
       should 'handle a custom multi-character delimiter' do
+        delimiter = '$DELIMITER$'
+        str = @array.join(delimiter)
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1, delimiter: delimiter)
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
       end
 
       should 'compress records' do
-        #assert_equal @array.join(@job.compress_delimiter), @job.records_collection.find_one['data']
+        @job.compress = true
+
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1)
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
+        # Confirm that the data stored was actually compressed
+        @job.records_collection.find_one do |record|
+          assert_equal Zlib::Deflate.deflate(@array.first), record['data'].to_s, record.inspect
+        end
       end
 
       should 'encrypt records' do
+        @job.encrypt = true
+
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1)
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
+        # Confirm that the data stored was actually encrypted
+        @job.records_collection.find_one do |record|
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@array.first, true, compress=false), record['data'].to_s, record.inspect
+        end
       end
 
       should 'compress and encrypt records' do
+        @job.encrypt = true
+        @job.compress = true
+
+        str = @array.join("\n")
+        stream = StringIO.new(str)
+        @job.add_text_stream(stream, block_size: 1)
+        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        index = 0
+        @job.each_record do |record, header|
+          assert_equal [ @array[index] ], record
+          index += 1
+        end
+        # Confirm that the data stored was actually compressed & encrypted
+        @job.records_collection.find_one do |record|
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@array.first, true, compress=true), record['data'].to_s, record.inspect
+        end
       end
 
     end
 
     context '#write_results' do
+      setup do
+        @array = [
+          'this is some',
+          'data',
+          'that we can delimit',
+          'as necessary'
+        ]
+        @job = BatchJob::MultiRecordJob.create(
+          collect_results: true,
+          repeatable:      true,
+        )
+      end
+
+      teardown do
+        @job.destroy if @job && !@job.new_record?
+      end
+
       should 'handle no results' do
+        stream = StringIO.new('')
+        @job.write_results(stream)
+        stream.rewind
+        assert_equal "\n", stream.to_s, stream.to_s.inspect
       end
 
       should 'handle 1 result' do
+        @job << [ @array.first ]
       end
 
       should 'handle many results' do
