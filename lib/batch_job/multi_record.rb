@@ -61,45 +61,99 @@ module BatchJob
       collect_results == true
     end
 
-    # Returns each record available in the order it was added
-    # until no more records are left for processing.
-    # After each item has been processed without raisin an exception it is deleted
-    # from the records queue
-    # The result if not nil is written to the results collection
+    # Calls the supplied block for each record available for processing
+    # Multiple threads can call this method at the same time
+    # to increase concurrency.
     #
-    # If an exception was thrown, ...
+    # By default it will keep processing until no more records are left for processing.
+    # After each block of records has been processed without raising an exception
+    # it is removed from the records queue
     #
-    # If a Mongo connection failure occurs the connection is automatically re-established
-    # and the job will be retried ( possibly by another process )
+    # The result is from the block is written to the output collection if
+    # collect_results? is true
+    #
+    # Returns the number of records processed
+    #
+    # If an exception was thrown the entire block of records is marked with
+    # the exception that occurred and removed from general by increasing its
+    # retry count.
+    #
+    # If the mongo_ha gem has been loaded, then the connection to mongo is
+    # automatically re-established and the job will resume anytime a
+    # Mongo connection failure occurs.
     #
     # Thread-safe, can be called by multiple threads at the same time
     #
     # Parameters
-    #   server_name
+    #   server_name [String]
     #     A unqiue name for this server instance
     #     Should only have one server name per machine
     #     On startup all pending jobs with this 'server_name' will be retried
-    def work(server_name, include_retries=false, &block)
+    #     TODO Make this a process-wide setting and include PID ( host_name:PID )
+    #
+    #   include_retries [true|false]
+    #     Whether to include blocks of records that we tried previously and
+    #     failed
+    #     Default: false
+    #
+    #   on_exception [Proc]
+    #     Block of code to execute if an unhandled exception was raised during
+    #     the processing of a block
+    #
+    #   block_number [Integer|Array<Integer>]
+    #     Only work on that specific block number(s)
+    #
+    #   block_count [Integer]
+    #     Only process block_count blocks before returning
+    #     Default: Keep processing until there are no more blocks available
+    #
+    def work(server_name, options={}, &block)
+      include_retries = options.delete(:include_retries)
+      include_retries = false if include_retries.nil?
+      on_exception    = options.delete(:on_exception)
+      block_number    = options.delete(:block_number)
+      block_count     = options.delete(:block_count)
+      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#work option: #{option.inspect}" }
+
+      selector = {
+        query:  { 'server' => { '$exists' => false }, retry_count: { '$exists' => include_retries } },
+        update: { server: server_name, started_at: Time.now },
+        sort:   '_id'
+        # full_response: true   returns the entire response object from the server including ‘ok’ and ‘lastErrorObject’.
+      }
+
+      # Apply block_number override if applicable
+      if block_number
+        if block_number.is_a?(Integer)
+          selector[:query]['_id'] = block_number
+        else
+          selector[:query]['_id'] = { '$in' => block_number }
+        end
+      end
+
+      block_count = 0
+      record_count = 0
       # find_and_modify is already in a retry block
-      while record = records_collection.find_and_modify(
-          query:  { 'server' => { :$exists => false }, retry_count: { :$exists => include_retries } },
-          update: { server: server_name, started_at: Time.now },
-          sort:   '_id'
-          # full_response: true   returns the entire response object from the server including ‘ok’ and ‘lastErrorObject’.
-        )
+      while block = input_collection.find_and_modify(selector)
         begin
-          result = block.call(record.delete('data'), record)
-          results_collection.insert('_id' => record['_id'], 'data' => result) unless result.nil? && collect_results?
-          # On successful completion delete the record from the job queue
-          records_collection.remove('_id' => record['_id'])
+          block, header = parse_message(block)
+          output_block = block.collect { |record| block.call(record, header) }
+          output_collection.insert(build_message(output_block, '_id' => block['_id'])) if collect_results?
+          # On successful completion remove the record from the job queue
+          input_collection.remove('_id' => block['_id'])
+          block_count += 1
+          break if block_count && (block_count >= block_count)
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
-          logger.fatal "Going down due to unhandled Mongo Exception", exc
-          raise
+          # Ignore duplicates since it means the job was restarted
+          unless exc.message.include?('E11000')
+            logger.fatal "Stopping work due to unhandled Mongo Exception", exc
+            raise(exc)
+          end
         rescue Exception => exc
           logger.error "Failed to process job", exc
           # Set failure information and increment retry count
-          records_collection.update(
-            { '_id' => record['_id'] },
+          input_collection.update(
+            { '_id' => block['_id'] },
             'server_name' => nil,
             'exception' => {
               'class'       => exc.class.to_s,
@@ -107,10 +161,12 @@ module BatchJob
               'backtrace'   => exc.backtrace || [],
               'server_name' => server_name
             },
-            'retry_count' => ( record['retry_count'] || 0 ) + 1
+            'retry_count' => ( block['retry_count'] || 0 ) + 1
           )
+          on_exception.call(exc) if on_exception
         end
       end
+      record_count
     end
 
     # Add a block of records for processing
@@ -123,8 +179,7 @@ module BatchJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def <<(block)
-      data = compress_block(block)
-      records_collection.insert('_id' => record_count + 1, 'data' => data)
+      input_collection.insert(build_message(block, '_id' => record_count + 1))
       logger.trace('#<< Add record') { data }
       # Only increment record_count once the job has been saved
       self.record_count += 1
@@ -154,6 +209,28 @@ module BatchJob
       record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
 
+    # Loads the specified file as blocks of records for processing
+    def load_file(file_name, type=:text)
+      case type.to_sym
+      when :text
+        begin
+          file = File.new(file_name, 'r')
+          parameters['source'] = { name: file_name, type: type, time: file.mtime, size: file.size }
+          load_stream(file)
+        ensure
+          file.close if file
+        end
+      when :zip
+        BatchJob::Reader::Zip.load_file(file_name) do |io_stream, source|
+          parameters['source'] = source.merge!(type: type)
+          load_stream(io_stream)
+        end
+      else
+        # TODO Custom exception
+        raise "Unknown file type: #{type.inspect}"
+      end
+    end
+
     # Load records for processing from the supplied stream
     # All data read from the stream is converted into UTF-8
     # before being persisted.
@@ -165,10 +242,6 @@ module BatchJob
     #     IO Stream that responds to: :read
     #
     #   options:
-    #     block_size
-    #       Number of lines to include in each record
-    #       Default: 10
-    #
     #     delimeter[Symbol|String]
     #       Record delimeter to use to break the stream up
     #         nil
@@ -191,7 +264,6 @@ module BatchJob
     #   are stored in MongoDB
     def load_stream(io_stream, options={})
       options = options.dup
-      block_size  = options.delete(:block_size) || 10
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
       options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#add_records option: #{option.inspect}" }
@@ -256,9 +328,7 @@ module BatchJob
     end
 
     # Returns the results of all processing into the supplied stream
-    # The results are returned in the order they were originally loaded
-    # in.
-    #
+    # The results are returned in the order they were originally loaded.
     #   stream [IO]
     #     An IO stream to which to write all the results to
     #     Must respond to :write
@@ -273,9 +343,9 @@ module BatchJob
     #   #write_results does not close the stream after all results have
     #   been written
     def unload(stream, delimiter=$/)
-      results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each do |result|
-          block = extract_block(result, false)
+      output_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each do |message|
+          block, _ = parse_message(message)
           stream.write(block.join(delimiter) + delimiter)
         end
       end
@@ -284,26 +354,26 @@ module BatchJob
 
     # Iterate over each record
     def each_record(&block)
-      records_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| block.call(extract_block(record), record) }
+      input_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each { |message| block.call(*parse_message(message)) }
       end
     end
 
     # Iterate over each result
     def each_result(&block)
-      results_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |record| block.call(extract_block(record), record) }
+      output_collection.find({}, sort: '_id', timeout: false) do |cursor|
+        cursor.each { |message| block.call(*parse_message(message)) }
       end
     end
 
     # Returns the Mongo Collection for the records queue name
-    def records_collection
-      @records_collection ||= self.class.work_connection.db["batch_job_records_#{id.to_s}"]
+    def input_collection
+      @input_collection ||= self.class.work_connection.db["batch_job_records_#{id.to_s}"]
     end
 
     # Returns the Mongo Collection for the records queue name
-    def results_collection
-      @results_collection ||= self.class.work_connection.db["batch_job_results_#{id.to_s}"]
+    def output_collection
+      @output_collection ||= self.class.work_connection.db["batch_job_results_#{id.to_s}"]
     end
 
     # Returns [Integer] percent of records completed so far
@@ -311,13 +381,13 @@ module BatchJob
     def percent_complete
       return 100 if completed?
       return 0 unless record_count > 0
-      ((results_collection.count.to_f / record_count) * 100).round
+      ((output_collection.count.to_f / record_count) * 100).round
     end
 
     # Returns [true|false] whether the entire job has been completely processed
     # Useful for determining if the job is complete when in active state
     def processing_complete?
-      active? && (record_count.to_i > 0) && (records_collection.count == 0) && (results_collection.count == record_count)
+      active? && (record_count.to_i > 0) && (input_collection.count == 0) && (output_collection.count == record_count)
     end
 
     # Returns [Hash] status of this job
@@ -325,11 +395,11 @@ module BatchJob
       h = super(time_zone)
       case
       when running? || paused?
-        h[:queued]           = records_collection.count,
-          h[:processed]        = results_collection.count
+        h[:queued]           = input_collection.count,
+          h[:processed]        = output_collection.count
         h[:record_count]     = record_count
-        h[:rate_per_hour]    = ((results_collection.count / (Time.now - started_at)) * 60 * 60).round
-        h[:percent_complete] = ((results_collection.count.to_f / record_count) * 100).to_i
+        h[:rate_per_hour]    = ((output_collection.count / (Time.now - started_at)) * 60 * 60).round
+        h[:percent_complete] = ((output_collection.count.to_f / record_count) * 100).to_i
       when completed?
         h[:rate_per_hour]    = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:rate_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
@@ -346,24 +416,26 @@ module BatchJob
     # Returns [Array<String>] The decompressed / un-encrypted data string if applicable
     # All strings within the Array will encoded to UTF-8 for consistency across
     # plain, compressed and encrypted
-    def extract_block(record, destructive=true)
-      data = destructive ? record.delete('data') : record['data']
+    def parse_message(message)
+      block = message.delete('data')
       if encrypt || compress
         str = if encrypt
-          SymmetricEncryption.cipher.binary_decrypt(data.to_s)
+          SymmetricEncryption.cipher.binary_decrypt(block.to_s)
         else compress
-          Zlib::Inflate.inflate(data.to_s).force_encoding(UTF8_ENCODING)
+          Zlib::Inflate.inflate(block.to_s).force_encoding(UTF8_ENCODING)
         end
         # Convert the de-compressed and/or un-encrypted string back into an array
-        data = str.split(compress_delimiter)
+        block = str.split(compress_delimiter)
       end
-      data
+      [ block, message ]
     end
 
-    # Compresses / Encrypts the data according to the job setting
-    def compress_block(array)
-      if encrypt || compress
-        str = array.join(compress_delimiter)
+    # Builds the message to be stored including the supplied block
+    # Compresses / Encrypts the block according to the job setting
+    def build_message(block, header={})
+      data = if encrypt || compress
+        # Convert block of records in a single string
+        str = block.join(compress_delimiter)
         if encrypt
           # Encrypt to binary without applying an encoding such as Base64
           # Use a random_iv with each encryption for better security
@@ -372,15 +444,17 @@ module BatchJob
           BSON::Binary.new(Zlib::Deflate.deflate(str))
         end
       else
-        # Without compression or encryption, store the array as is in Mongo
-        array
+        # Without compression or encryption, store the array as is
+        block
       end
+      header['data'] = data
+      header
     end
 
     # Drop the records collection
     def cleanup_records
-      records_collection.drop
-      results_collection.drop
+      input_collection.drop
+      output_collection.drop
     end
 
   end

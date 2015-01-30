@@ -7,11 +7,16 @@ require 'symmetric-encryption'
 require 'batch_job/version'
 
 module BatchJob
-  autoload :Config,      'batch_job/config'
-  autoload :Heartbeat,   'batch_job/heartbeat'
-  autoload :Simple,      'batch_job/simple'
-  autoload :MultiRecord, 'batch_job/multi_record'
-  autoload :Server,      'batch_job/server'
-  autoload :Worker,      'batch_job/worker'
+  autoload :Config,                'batch_job/config'
+  autoload :Heartbeat,             'batch_job/heartbeat'
+  autoload :Simple,                'batch_job/simple'
+  autoload :MultiRecord,           'batch_job/multi_record'
+  autoload :Server,                'batch_job/server'
+  autoload :Worker,                'batch_job/worker'
+  module Reader
+    autoload :Zip,                 'batch_job/reader/zip'
+  end
+  module Utility
+    autoload :CSVRow,              'batch_job/utility/csv_row'
+  end
 end
-

@@ -361,8 +361,8 @@ class MultiRecordJobTest < Minitest::Test
       should 'support multiple databases' do
         assert_equal 'test_batch_job', BatchJob::MultiRecord.collection.db.name
         job = BatchJob::MultiRecord.new
-        assert_equal 'test_batch_job_work', job.records_collection.db.name
-        assert_equal 'test_batch_job_work', job.results_collection.db.name
+        assert_equal 'test_batch_job_work', job.input_collection.db.name
+        assert_equal 'test_batch_job_work', job.output_collection.db.name
       end
     end
 
