@@ -19,4 +19,7 @@ module BatchJob
   module Utility
     autoload :CSVRow,              'batch_job/utility/csv_row'
   end
+  module Writer
+    autoload :Zip,                 'batch_job/writer/zip'
+  end
 end

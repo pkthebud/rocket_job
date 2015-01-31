@@ -107,7 +107,7 @@ module BatchJob
     #     Only process block_count blocks before returning
     #     Default: Keep processing until there are no more blocks available
     #
-    def work(server_name, options={}, &block)
+    def work(server_name, options={}, &proc)
       include_retries = options.delete(:include_retries)
       include_retries = false if include_retries.nil?
       on_exception    = options.delete(:on_exception)
@@ -131,18 +131,19 @@ module BatchJob
         end
       end
 
-      block_count = 0
-      record_count = 0
+      processed_block_count = 0
+      processed_record_count = 0
       # find_and_modify is already in a retry block
-      while block = input_collection.find_and_modify(selector)
+      while message = input_collection.find_and_modify(selector)
         begin
-          block, header = parse_message(block)
-          output_block = block.collect { |record| block.call(record, header) }
-          output_collection.insert(build_message(output_block, '_id' => block['_id'])) if collect_results?
+          input_block, header = parse_message(message)
+          output_block = input_block.collect { |record| proc.call(record, header) }
+          output_collection.insert(build_message(output_block, '_id' => header['_id'])) if collect_results?
           # On successful completion remove the record from the job queue
-          input_collection.remove('_id' => block['_id'])
-          block_count += 1
-          break if block_count && (block_count >= block_count)
+          input_collection.remove('_id' => header['_id'])
+          processed_block_count += 1
+          processed_record_count += input_block.size
+          break if block_count && (processed_block_count >= block_count)
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           unless exc.message.include?('E11000')
@@ -153,7 +154,7 @@ module BatchJob
           logger.error "Failed to process job", exc
           # Set failure information and increment retry count
           input_collection.update(
-            { '_id' => block['_id'] },
+            { '_id' => header['_id'] },
             'server_name' => nil,
             'exception' => {
               'class'       => exc.class.to_s,
@@ -161,12 +162,12 @@ module BatchJob
               'backtrace'   => exc.backtrace || [],
               'server_name' => server_name
             },
-            'retry_count' => ( block['retry_count'] || 0 ) + 1
+            'retry_count' => header['retry_count'].to_i + 1
           )
           on_exception.call(exc) if on_exception
         end
       end
-      record_count
+      processed_record_count
     end
 
     # Add a block of records for processing
@@ -182,7 +183,7 @@ module BatchJob
       input_collection.insert(build_message(block, '_id' => record_count + 1))
       logger.trace('#<< Add record') { data }
       # Only increment record_count once the job has been saved
-      self.record_count += 1
+      self.record_count += block.size
     end
 
     # Load each record returned by the supplied Block until it returns nil
@@ -209,28 +210,6 @@ module BatchJob
       record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
 
-    # Loads the specified file as blocks of records for processing
-    def load_file(file_name, type=:text)
-      case type.to_sym
-      when :text
-        begin
-          file = File.new(file_name, 'r')
-          parameters['source'] = { name: file_name, type: type, time: file.mtime, size: file.size }
-          load_stream(file)
-        ensure
-          file.close if file
-        end
-      when :zip
-        BatchJob::Reader::Zip.load_file(file_name) do |io_stream, source|
-          parameters['source'] = source.merge!(type: type)
-          load_stream(io_stream)
-        end
-      else
-        # TODO Custom exception
-        raise "Unknown file type: #{type.inspect}"
-      end
-    end
-
     # Load records for processing from the supplied stream
     # All data read from the stream is converted into UTF-8
     # before being persisted.
@@ -238,7 +217,7 @@ module BatchJob
     # The entire stream is read until it returns nil
     #
     # Parameters
-    #   io_stream [IO]
+    #   io [IO]
     #     IO Stream that responds to: :read
     #
     #   options:
@@ -262,7 +241,23 @@ module BatchJob
     # * Not thread-safe. Only call from one thread at a time per job instance
     # * All data is converted by this method to UTF-8 since that is how strings
     #   are stored in MongoDB
-    def load_stream(io_stream, options={})
+    #
+    # Example:
+    #   # Load plain text records from a file
+    #   File.open(file_name, 'r') do |file|
+    #     # Copy input details as parameters to the job
+    #     parameters['source'] = { name: file_name, type: type, time: file.mtime, size: file.size }
+    #     job.input_stream(file)
+    #   end
+    #
+    # Example:
+    #   # Load from a Zip file:
+    #   BatchJob::Reader::Zip.input_file('myfile.zip') do |io, source|
+    #     # Copy input details as parameters to the job
+    #      parameters['source'] = source.merge!(type: :zip)
+    #      job.input_stream(io)
+    #    end
+    def input_stream(io, options={})
       options = options.dup
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
@@ -279,7 +274,7 @@ module BatchJob
         partial = ''
         # TODO Add optional data cleansing to strip out for example non-printable
         # characters before converting to UTF-8
-        block = io_stream.read(buffer_size)
+        block = io.read(buffer_size)
         logger.trace('#add_text_stream read from input stream:') { block.inspect }
         break unless block
         buffer << block.force_encoding(UTF8_ENCODING)
@@ -329,9 +324,9 @@ module BatchJob
 
     # Returns the results of all processing into the supplied stream
     # The results are returned in the order they were originally loaded.
-    #   stream [IO]
+    #   io [IO]
     #     An IO stream to which to write all the results to
-    #     Must respond to :write
+    #     Must respond to #write
     #
     #   delimiter [String]
     #     Add the specified delimiter after every record when writing it
@@ -339,17 +334,17 @@ module BatchJob
     #     Default: OS Specific. Linux: "\n"
     #
     # Notes:
-    # * Remember to close the stream after calling #write_results since
-    #   #write_results does not close the stream after all results have
+    # * Remember to close the stream after calling #output_stream since
+    #   #output_stream does not close the stream after all results have
     #   been written
-    def unload(stream, delimiter=$/)
+    def output_stream(io, delimiter=$/)
       output_collection.find({}, sort: '_id', timeout: false) do |cursor|
         cursor.each do |message|
           block, _ = parse_message(message)
-          stream.write(block.join(delimiter) + delimiter)
+          io.write(block.join(delimiter) + delimiter)
         end
       end
-      stream
+      io
     end
 
     # Iterate over each record
@@ -390,21 +385,33 @@ module BatchJob
       active? && (record_count.to_i > 0) && (input_collection.count == 0) && (output_collection.count == record_count)
     end
 
+    # Returns [Integer] the number of blocks queued for processing
+    def blocks_queued
+      input_collection.count
+    end
+
+    # Returns [Integer] the number of blocks already processed
+    def blocks_processed
+      output_collection.count
+    end
+
     # Returns [Hash] status of this job
     def status(time_zone='EST')
       h = super(time_zone)
       case
       when running? || paused?
-        h[:queued]           = input_collection.count,
-          h[:processed]        = output_collection.count
-        h[:record_count]     = record_count
-        h[:rate_per_hour]    = ((output_collection.count / (Time.now - started_at)) * 60 * 60).round
-        h[:percent_complete] = ((output_collection.count.to_f / record_count) * 100).to_i
+        processed = blocks_processed
+        h[:blocks_queued]    = blocks_queued
+        h[:blocks_processed] = processed
+        h[:total_records]    = record_count
+        h[:records_per_hour] = ((processed * block_size / (Time.now - started_at)) * 60 * 60).round
+        h[:percent_complete] = (((processed.to_f * block_size) / record_count) * 100).to_i
       when completed?
-        h[:rate_per_hour]    = ((record_count / h[:seconds]) * 60 * 60).round
-        h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:rate_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
-        h[:processed]        = record_count
-        h[:record_count]     = record_count
+        h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
+        h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
+        h[:total_records]    = record_count
+      when queued?
+        h[:blocks_queued]    = blocks_queued
       end
       h
     end

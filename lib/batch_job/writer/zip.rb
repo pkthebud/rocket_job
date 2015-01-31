@@ -1,34 +1,64 @@
 module BatchJob
-  module Reader
+  module Writer
     module Zip
       if defined?(JRuby)
         # Java has built-in support for Zip files
 
-        # Convert Java Stream into a Ruby Stream
-        class JavaStreamAsRubyStream
-          def initialize(java_stream)
-            @java_stream = java_stream
-            @bytes       = nil
-          end
-
-          def read(size)
-            # Auto-grow byte array if needed
-            @bytes = Java::byte[size].new if !@bytes || (@bytes.size < size)
-            n = @java_stream.read(@bytes)
-            n > 0 ? String.from_java_bytes(@bytes)[0..n-1] : nil
-          end
-        end
-
-        def self.file(job, file_name)
-          fin = Java::JavaIo::FileInputStream.new(file_name)
-          zin = Java::JavaUtilZip::ZipInputStream.new(fin)
-          entry = zin.get_next_entry
-          job.parameters['csv_filename'] = entry.name
-          job.load_stream(JavaStreamAsRubyStream.new(zin))
+        # Write a single file in Zip format to the supplied output_stream
+        #
+        # Parameters
+        #   output_stream [IO]
+        #     Stream to write compressed data to.
+        #     Must respond to #write
+        #
+        #   file_name [String]
+        #     Name of the file within the Zip Stream
+        #
+        # The stream supplied to the block only responds to #write
+        #
+        # Example:
+        #   BatchJob::Writer::Zip.output_stream(output_stream, file_name) do |io_stream|
+        #     io_stream.write("hello world\n")
+        #     io_stream.write("and more\n")
+        #   end
+        def self.output_stream(output_stream, file_name, &block)
+          zout = Java::JavaUtilZip::ZipOutputStream.new(output_stream.to_outputstream)
+          zout.put_next_entry(Java::JavaUtilZip::ZipEntry.new(file_name))
+          io = zout.to_io
+          block.call(io)
         ensure
-          zin.close if zin
+          io.close if io
         end
+
+        # Write a single file in Zip format to the supplied output file name
+        #
+        # Parameters
+        #   zip_file_name [String]
+        #     Full path and filename for the output zip file
+        #
+        #   file_name [String]
+        #     Name of the file within the Zip Stream
+        #
+        # The stream supplied to the block only responds to #write
+        #
+        # Example:
+        #   BatchJob::Writer::Zip.open_file('myfile.zip', 'hello.txt') do |io_stream|
+        #     io_stream.write("hello world\n")
+        #     io_stream.write("and more\n")
+        #   end
+        def self.output_file(zip_file_name, file_name, &block)
+          out = Java::JavaIo::FileOutputStream.new(zip_file_name)
+          zout = Java::JavaUtilZip::ZipOutputStream.new(out)
+          zout.put_next_entry(Java::JavaUtilZip::ZipEntry.new(file_name))
+          io = zout.to_io
+          block.call(io)
+        ensure
+          io.close if io
+          out.close if out
+        end
+
       else
+
         # MRI needs Ruby Zip, since it only has native support for GZip
         begin
           require 'zip'
@@ -37,16 +67,22 @@ module BatchJob
           raise(exc)
         end
 
-        # Read from a Zip file and stream into Job
-        #  Sets job parameter 'csv_filename' to the name of the first file found in the zip
-        def self.file(job, file_name)
-          ::Zip::File.open(file_name) do |zip_file|
-            raise 'The zip archive did not have any files in it.' if zip_file.count == 0
-            raise 'The zip archive has more than one file in it.' if zip_file.count != 1
-            entry = zip_file.first
-            job.parameters['csv_filename'] = entry.name
-            entry.get_input_stream { |io_stream| job.load_stream(io_stream) }
-          end
+        def self.output_stream(output_stream, file_name,  &block)
+          zos = ::Zip::OutputStream.new(file_name)
+          # Hack to replace stream, otherwise it tries to do a #reopen followed by a #rewind
+          zos.instance_variable_set(:@output_stream, output_stream)
+          zos.put_next_entry(file_name)
+          block.call(zos)
+        ensure
+          zos.close_buffer if zos
+        end
+
+        def self.output_file(zip_file_name, file_name, &block)
+          zos = ::Zip::OutputStream.new(zip_file_name)
+          zos.put_next_entry(file_name)
+          block.call(zos)
+        ensure
+          zos.close_buffer if zos
         end
 
       end

@@ -125,6 +125,9 @@ module BatchJob
     # For Multi-record jobs do not set this value directly
     key :percent_complete,        Integer, default: 0
 
+    # Store all job types in this collection
+    set_collection_name 'batch_jobs'
+
     after_create  :create_status
     after_destroy :destroy_status
 
