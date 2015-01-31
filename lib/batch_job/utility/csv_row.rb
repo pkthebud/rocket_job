@@ -10,7 +10,7 @@ module BatchJob
       # Hard code the row separator so that it does not try to auto-detect it
       def initialize(encoding=BatchJob::UTF8_ENCODING)
         @io = StringIO.new(''.force_encoding(encoding))
-        @csv = CSV.new(@io, row_sep:"\n")
+        @csv = CSV.new(@io, row_sep: '')
       end
 
       # Parse a single line of CSV data
@@ -26,7 +26,8 @@ module BatchJob
 
       # Return the supplied array as a single line CSV string
       def to_csv(array)
-        (csv << array).string
+        @io.rewind
+        (@csv << array).string
       end
     end
 

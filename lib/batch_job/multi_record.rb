@@ -153,16 +153,19 @@ module BatchJob
         rescue Exception => exc
           logger.error "Failed to process job", exc
           # Set failure information and increment retry count
-          input_collection.update(
-            { '_id' => header['_id'] },
-            'server_name' => nil,
-            'exception' => {
-              'class'       => exc.class.to_s,
-              'message'     => exc.message,
-              'backtrace'   => exc.backtrace || [],
-              'server_name' => server_name
-            },
-            'retry_count' => header['retry_count'].to_i + 1
+          input_collection.update({'_id' => header['_id']},
+            {
+              '$unset' => 'server_name',
+              '$set' => {
+                'exception' => {
+                  'class'       => exc.class.to_s,
+                  'message'     => exc.message,
+                  'backtrace'   => exc.backtrace || [],
+                  'server_name' => server_name
+                },
+                'retry_count' => header['retry_count'].to_i + 1
+              }
+            }
           )
           on_exception.call(exc) if on_exception
         end
@@ -246,7 +249,7 @@ module BatchJob
     #   # Load plain text records from a file
     #   File.open(file_name, 'r') do |file|
     #     # Copy input details as parameters to the job
-    #     parameters['source'] = { name: file_name, type: type, time: file.mtime, size: file.size }
+    #     job.parameters['source'] = { name: file_name, type: type, time: file.mtime, size: file.size }
     #     job.input_stream(file)
     #   end
     #
@@ -254,7 +257,7 @@ module BatchJob
     #   # Load from a Zip file:
     #   BatchJob::Reader::Zip.input_file('myfile.zip') do |io, source|
     #     # Copy input details as parameters to the job
-    #      parameters['source'] = source.merge!(type: :zip)
+    #      job.parameters['source'] = source.merge!(type: :zip)
     #      job.input_stream(io)
     #    end
     def input_stream(io, options={})
@@ -318,7 +321,7 @@ module BatchJob
       # Write partial record to Mongo
       self << record if record.size > 0
 
-      logger.debug { "#add_text_stream Added #{count - self.record_count} records" }
+      logger.debug { "#add_text_stream Added #{self.record_count - count} records" }
       (count .. self.record_count)
     end
 
@@ -417,8 +420,6 @@ module BatchJob
     end
 
     private
-
-    UTF8_ENCODING = Encoding.find("UTF-8").freeze
 
     # Returns [Array<String>] The decompressed / un-encrypted data string if applicable
     # All strings within the Array will encoded to UTF-8 for consistency across
