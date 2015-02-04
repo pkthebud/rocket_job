@@ -4,17 +4,24 @@ require File.join(File.dirname(__FILE__), 'test_helper')
 class MultiRecordJobTest < Minitest::Test
   context BatchJob::MultiRecord do
     setup do
-      BatchJob::MultiRecord.destroy_all
-      @data = [
-        [ 'col1',  'col2',   'col3' ],
-        [ 'vala1', 'vala2', 'vala3' ],
-        [ 'valb1', 'valb2', 'valb3' ],
-        [ 'valc1', 'valc2', 'valc3' ],
+      BatchJob::Single.destroy_all
+      @lines = [
+        'this is some',
+        'data',
+        #        '',
+        'a',
+        'that we can delimit',
+        'as necessary'
       ]
-      @description = 'Hello World'
-      @job = BatchJob::MultiRecord.new(
-        description: @description
+      @job = BatchJob::MultiRecord.create(
+        description:     @description,
+        collect_output: true,
+        repeatable:      true,
       )
+    end
+
+    teardown do
+      @job.destroy if @job && !@job.new_record?
     end
 
     context '#status' do
@@ -28,196 +35,207 @@ class MultiRecordJobTest < Minitest::Test
       end
     end
 
-    should '#<<' do
-      @data.each { |row| @job << row }
+    context '#input_block' do
+      should 'write blocks' do
+        @lines.each { |line| @job.input_block([line]) }
 
-      assert_equal @data.size, @job.record_count
-      assert_equal @data.size, @job.records_collection.count
+        assert_equal @lines.size, @job.record_count
+        assert_equal @lines.size, @job.input_collection.count
+      end
     end
 
-    context '#load_records' do
+    context '#input_records' do
       should 'support block size of 1' do
         @job.block_size = 1
-        blocks = @data.dup
-        result = @job.load_records { blocks.shift }
-        assert_equal (1..4), result
+        lines = @lines.dup
+        result = @job.input_records { lines.shift }
+        assert_equal (1..@lines.size), result
 
-        assert_equal @data.size, @job.record_count
-        assert_equal @data.size, @job.records_collection.count
+        assert_equal @lines.size, @job.record_count
+        assert_equal @lines.size, @job.input_collection.count
       end
 
       should 'support block size of 2' do
         @job.block_size = 2
-        blocks = @data.dup
-        result = @job.load_records { blocks.shift }
-        assert_equal (1..2), result
+        lines = @lines.dup
+        result = @job.input_records { lines.shift }
+        assert_equal (1..@lines.size), result
+        block_count = (0.5 + @lines.size.to_f / 2).to_i
 
-        assert_equal @data.size / 2, @job.record_count
-        assert_equal @data.size / 2, @job.records_collection.count
+        assert_equal @lines.size, @job.record_count
+        assert_equal block_count, @job.input_collection.count
       end
     end
 
     context '#work' do
       should 'read all records' do
-        @data.each { |row| @job << row }
-        @job.save!
+        assert_equal 0, @job.record_count
+        @job.block_size = 1
+        @lines.each { |row| @job.input_block([row]) }
+        @job.start!
 
-        assert_equal @data.size, @job.record_count
+        assert_equal @lines.size, @job.record_count
 
         count = 0
         @job.work('server_name') do |data, header|
-          assert_equal @data[count], data
+          assert_equal @lines[count], data
           count += 1
         end
-        assert_equal @data.size, count
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
+        assert_equal @lines.size, count
       end
 
       should 'retry on exception' do
-        @data.each { |row| @job << row }
-        @job.save!
+        @job.block_size = 1
+        @lines.each { |line| @job.input_block([line]) }
+        @job.start!
 
-        assert_equal @data.size, @job.record_count
+        assert_equal @lines.size, @job.record_count
 
         count = 0
         @job.work('server_name') do |data, header|
           count += 1
           raise 'Oh no'
         end
-        assert_equal @data.size, count
-        # Should have been re-queued
-        assert_equal @data.size, @job.records_collection.count
+        assert_equal false, @job.completed?
+        assert_equal @lines.size, @job.failed_blocks
+        assert_equal @lines.size, count
+        # Must stay in the queue
+        assert_equal @lines.size, @job.input_collection.count
 
+        # Should not process failed jobs
         count = 0
-        #          @job.work('server_name', true) do |data, header|
-        #            assert_equal @data[count], data
-        #            assert_equal 1, header['retry_count']
-        #            count += 1
-        #          end
-        #          assert_equal @data.size, count
+        @job.work('server_name') do |data, header|
+          count += 1
+        end
+        assert_equal 0, count
+
+        # Make records available for processing again
+        @job.retry_failed_blocks
+
+        # Re-process the failed jobs
+        count = 0
+        results = []
+        @job.work('server_name') do |record, header|
+          results << record
+          count += 1
+        end
+        assert_equal 0, @job.failed_blocks
+        assert_equal results.size, count
+        assert_equal @lines, results
+        assert_equal true, @job.completed?
       end
     end
 
-    context '#load_stream' do
-      setup do
-        @array = [
-          'this is some',
-          'data',
-          'that we can delimit',
-          'as necessary'
-        ]
-        @job = BatchJob::MultiRecord.create(
-          collect_results: true,
-          repeatable:      true,
-        )
-      end
-
-      teardown do
-        @job.destroy if @job && !@job.new_record?
-      end
-
+    context '#input_stream' do
       should 'handle empty streams' do
         str = ""
         stream = StringIO.new(str)
-        @job.load_stream(stream)
-        assert_equal 0, @job.records_collection.count
+        @job.input_stream(stream)
+        assert_equal 0, @job.input_collection.count
       end
 
       should 'handle a stream consisting only of the delimiter' do
         str = "\n"
         stream = StringIO.new(str)
-        @job.load_stream(stream)
-        assert_equal 1, @job.records_collection.count
+        @job.input_stream(stream)
+        assert_equal 1, @job.input_collection.count
         @job.each_record do |record, header|
           assert_equal [''], record
         end
       end
 
       should 'handle a linux stream' do
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream)
-        assert_equal 1, @job.records_collection.count
+        @job.input_stream(stream)
+        assert_equal 1, @job.input_collection.count
         @job.each_record do |record, header|
-          assert_equal @array, record
+          assert_equal @lines, record
         end
       end
 
       should 'handle a windows stream' do
-        str = @array.join("\r\n")
+        str = @lines.join("\r\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream)
+        @job.input_stream(stream)
       end
 
       should 'handle a one line stream with a delimiter' do
         str = "hello\r\n"
         stream = StringIO.new(str)
-        @job.load_stream(stream)
+        @job.input_stream(stream)
       end
 
       should 'handle a one line stream with no delimiter' do
         str = "hello"
         stream = StringIO.new(str)
-        @job.load_stream(stream)
-        assert_equal 1, @job.records_collection.count
+        @job.input_stream(stream)
+        assert_equal 1, @job.input_collection.count
         @job.each_record do |record, header|
           assert_equal [str], record
         end
       end
 
       should 'handle last line ending with a delimiter' do
-        str = @array.join("\r\n")
+        str = @lines.join("\r\n")
         str << "\r\n"
         stream = StringIO.new(str)
-        @job.load_stream(stream)
-        assert_equal 1, @job.records_collection.count
+        @job.input_stream(stream)
+        assert_equal 1, @job.input_collection.count
         @job.each_record do |record, header|
-          assert_equal @array, record
+          assert_equal @lines, record
         end
       end
 
       should 'handle a block size of 1' do
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1)
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream)
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
       end
 
       should 'handle a small stream the same size as block_size' do
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: @array.size)
-        assert_equal 1, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = @lines.size
+        @job.input_stream(stream)
+        assert_equal 1, @job.input_collection.count, @job.input_collection.find.to_a
         @job.each_record do |record, header|
-          assert_equal @array, record
+          assert_equal @lines, record
         end
       end
 
       should 'handle a custom 1 character delimiter' do
-        str = @array.join('$')
+        str = @lines.join('$')
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1, delimiter: '$')
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream, delimiter: '$')
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
       end
 
       should 'handle a custom multi-character delimiter' do
         delimiter = '$DELIMITER$'
-        str = @array.join(delimiter)
+        str = @lines.join(delimiter)
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1, delimiter: delimiter)
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream, delimiter: delimiter)
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
       end
@@ -225,36 +243,38 @@ class MultiRecordJobTest < Minitest::Test
       should 'compress records' do
         @job.compress = true
 
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1)
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream)
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the data stored was actually compressed
-        @job.records_collection.find_one do |record|
-          assert_equal Zlib::Deflate.deflate(@array.first), record['data'].to_s, record.inspect
+        @job.input_collection.find_one do |record|
+          assert_equal Zlib::Deflate.deflate(@lines.first), record['data'].to_s, record.inspect
         end
       end
 
       should 'encrypt records' do
         @job.encrypt = true
 
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1)
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream)
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the data stored was actually encrypted
-        @job.records_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@array.first, true, compress=false), record['data'].to_s, record.inspect
+        @job.input_collection.find_one do |record|
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=false), record['data'].to_s, record.inspect
         end
       end
 
@@ -262,97 +282,96 @@ class MultiRecordJobTest < Minitest::Test
         @job.encrypt = true
         @job.compress = true
 
-        str = @array.join("\n")
+        str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.load_stream(stream, block_size: 1)
-        assert_equal @array.size, @job.records_collection.count, @job.records_collection.find.to_a
+        @job.block_size = 1
+        @job.input_stream(stream)
+        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
         @job.each_record do |record, header|
-          assert_equal [ @array[index] ], record
+          assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the data stored was actually compressed & encrypted
-        @job.records_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@array.first, true, compress=true), record['data'].to_s, record.inspect
+        @job.input_collection.find_one do |record|
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=true), record['data'].to_s, record.inspect
         end
       end
 
     end
 
-    context '#unload' do
-      setup do
-        @array = [
-          'this is some',
-          'data',
-          'that we can delimit',
-          'as necessary'
-        ]
-        @job = BatchJob::MultiRecord.create(
-          collect_results: true,
-          repeatable:      true,
-        )
-      end
-
-      teardown do
-        @job.destroy if @job && !@job.new_record?
-      end
-
+    context '#output_stream' do
       should 'handle no results' do
         stream = StringIO.new('')
-        @job.unload(stream)
+        @job.output_stream(stream)
         assert_equal "", stream.string, stream.string.inspect
       end
 
       should 'handle 1 result' do
-        @job << [ @array.first ]
+        @job.input_block([ @lines.first ])
+        @job.start!
         @job.work('worker') { |block| block }
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
         stream = StringIO.new('')
-        @job.unload(stream)
-        assert_equal @array.first + "\n", stream.string, stream.string.inspect
+        @job.output_stream(stream)
+        assert_equal @lines.first + "\n", stream.string, stream.string.inspect
       end
 
       should 'handle many results' do
         @job.block_size = 1
-        blocks = @array.dup
-        result = @job.load_records { blocks.shift }
+        blocks = @lines.dup
+        @job.input_records { blocks.shift }
+        @job.start!
         @job.work('worker') { |block| block }
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
         stream = StringIO.new('')
-        @job.unload(stream)
-        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
+        @job.output_stream(stream)
+        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decompress results' do
         @job.compress = true
         @job.block_size = 1
-        blocks = @array.dup
-        result = @job.load_records { blocks.shift }
+        blocks = @lines.dup
+        @job.input_records { blocks.shift }
+        @job.start!
         @job.work('worker') { |block| block }
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
         stream = StringIO.new('')
-        @job.unload(stream)
-        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
+        @job.output_stream(stream)
+        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decrypt results' do
         @job.encrypt = true
         @job.block_size = 1
-        blocks = @array.dup
-        result = @job.load_records { blocks.shift }
+        blocks = @lines.dup
+        @job.input_records { blocks.shift }
+        @job.start!
         @job.work('worker') { |block| block }
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
         stream = StringIO.new('')
-        @job.unload(stream)
-        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
+        @job.output_stream(stream)
+        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
       should 'decompress & decrypt results' do
         @job.compress = true
         @job.encrypt = true
         @job.block_size = 1
-        blocks = @array.dup
-        result = @job.load_records { blocks.shift }
+        blocks = @lines.dup
+        @job.input_records { blocks.shift }
+        @job.start!
         @job.work('worker') { |block| block }
+        assert_equal true, @job.completed?
+        assert_equal 0, @job.failed_blocks
         stream = StringIO.new('')
-        @job.unload(stream)
-        assert_equal @array.join("\n") + "\n", stream.string, stream.string.inspect
+        @job.output_stream(stream)
+        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
     end

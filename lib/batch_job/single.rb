@@ -1,11 +1,5 @@
 # encoding: UTF-8
 require 'aasm'
-# Temporarily Re-use just the Resque Status UI
-begin
-  require 'resque/plugins/status/hash'
-rescue LoadError
-end
-
 module BatchJob
   # Batch Job identifies each batch job submission
   #
@@ -28,17 +22,15 @@ module BatchJob
   # For example a single file that contains millions of records to be processed
   # as quickly as possible without impacting other batch jobs with a higher priority.
   #
-  class Simple
+  class Single
     include MongoMapper::Document
     include AASM
     include SemanticLogger::Loggable
 
-    # Stored centrally with data replicated between data centers
-    #set_database_name   "shared_#{Rails.env}" unless Rails.env.development? || Rails.env.test?
-
     #
-    # User defined attributes
+    # User definable attributes
     #
+    # The following attributes are set when the job is created
 
     # Description for this job instance
     key :description,             String
@@ -111,7 +103,7 @@ module BatchJob
     key :completed_at,            Time
 
     # Number of times that this job has been retried
-    key :retry_count,             Integer, default: 0
+    key :failure_count,           Integer, default: 0
 
     # This job is assigned_to, or was processed by this server
     key :assigned_to,             String
@@ -128,10 +120,7 @@ module BatchJob
     # Store all job types in this collection
     set_collection_name 'batch_jobs'
 
-    after_create  :create_status
-    after_destroy :destroy_status
-
-    validates_presence_of :state, :priority, :retry_count, :created_at, :percent_complete
+    validates_presence_of :state, :priority, :failure_count, :created_at, :percent_complete
     validates :percent_complete, inclusion: 0..100
 
     # State Machine events and transitions
@@ -176,7 +165,6 @@ module BatchJob
           self.started_at = Time.now
           set(state: state, started_at: started_at)
           UserMailer.batch_job_started(self).deliver if email_addresses.present?
-          update_ui_status
         end
         transitions from: :queued, to: :running
       end
@@ -186,7 +174,6 @@ module BatchJob
           self.completed_at = Time.now
           set(state: state, completed_at: completed_at)
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
-          update_ui_status
         end
         transitions from: :running, to: :completed
       end
@@ -196,7 +183,6 @@ module BatchJob
           self.completed_at = Time.now
           set(state: state, completed_at: completed_at)
           UserMailer.batch_job_paused(self).deliver if email_addresses.present?
-          update_ui_status
         end
         transitions from: :running, to: :paused
       end
@@ -206,7 +192,6 @@ module BatchJob
           self.completed_at = nil
           set(state: state, completed_at: completed_at)
           UserMailer.batch_job_resumed(self).deliver if email_addresses.present?
-          update_ui_status
         end
         transitions from: :running, to: :paused
       end
@@ -216,7 +201,6 @@ module BatchJob
           self.completed_at = Time.now
           set(state: state)
           UserMailer.batch_job_aborted(self).deliver if email_addresses.present?
-          update_ui_status
         end
         transitions from: :running, to: :aborted
         transitions from: :queued, to: :aborted
@@ -284,45 +268,7 @@ module BatchJob
       (count ** 4) + 15 + (rand(30)*(count+1))
     end
 
-    # Hijack the Resque Status UI until BatchJob gets it's own
-    def update_ui_status
-      resque_status = case
-      when completed?
-        'completed'
-      when paused?
-        'failed'
-      when aborted?
-        'killed'
-      when queued?
-        'queued'
-      else
-        'working'
-      end
-
-      h = self.status
-
-      resque_status = {
-        'message' => h[:message],
-        'num'     => completed? ? 100 : (percent_complete || 0),
-        'total'   => 100,
-        'name'    => h[:description],
-        'status'  => resque_status
-      }
-      Resque::Plugins::Status::Hash.set(id.to_s, resque_status) if defined?(Resque::Plugins::Status::Hash)
-    end
-
     private
-
     @@work_connection = nil
-
-    # Delete Status from UI if job is destroyed
-    def destroy_status
-      Resque::Plugins::Status::Hash.remove(id.to_s) if defined?(Resque::Plugins::Status::Hash)
-    end
-
-    # Create UI Job status
-    def create_status
-      Resque::Plugins::Status::Hash.create(id.to_s, 'name' => description, 'message' => "Queued as of #{Time.now.in_time_zone('EST')}", 'status' => 'queued') if defined?(Resque::Plugins::Status::Hash)
-    end
   end
 end

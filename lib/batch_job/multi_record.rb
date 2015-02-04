@@ -1,14 +1,15 @@
 # encoding: UTF-8
 require 'zlib'
 module BatchJob
-  class MultiRecord < Simple
-    # Number of records in this job
-    #   Useful when updating the UI progress bar
-    key :record_count,            Integer, default: 0
+  class MultiRecord < Single
+    #
+    # User definable attributes
+    #
+    # The following attributes are set when the job is created
 
     # Whether to store results in a separate collection, or to discard any results
     # returned when records were processed
-    key :collect_results,         Boolean, default: false
+    key :collect_output,         Boolean, default: false
 
     # Compress all working data
     # The parameters are not affected in any way, just the data stored in the
@@ -27,6 +28,16 @@ module BatchJob
 
     # Number of records to include in each block that is processed
     key :block_size,              Integer, default: 100
+
+    #
+    # Values that jobs can update during processing
+    #
+
+    # Number of records in this job
+    key :record_count,            Integer, default: 0
+
+    # Number of blocks that failed to process due to an un-handled exception
+    key :failed_blocks,           Integer, default: 0
 
     after_destroy :cleanup_records
 
@@ -57,8 +68,8 @@ module BatchJob
     end
 
     # Returns [true|false] whether to collect the results from running this batch
-    def collect_results?
-      collect_results == true
+    def collect_output?
+      collect_output == true
     end
 
     # Calls the supplied block for each record available for processing
@@ -70,7 +81,7 @@ module BatchJob
     # it is removed from the records queue
     #
     # The result is from the block is written to the output collection if
-    # collect_results? is true
+    # collect_output? is true
     #
     # Returns the number of records processed
     #
@@ -91,11 +102,6 @@ module BatchJob
     #     On startup all pending jobs with this 'server_name' will be retried
     #     TODO Make this a process-wide setting and include PID ( host_name:PID )
     #
-    #   include_retries [true|false]
-    #     Whether to include blocks of records that we tried previously and
-    #     failed
-    #     Default: false
-    #
     #   on_exception [Proc]
     #     Block of code to execute if an unhandled exception was raised during
     #     the processing of a block
@@ -108,16 +114,15 @@ module BatchJob
     #     Default: Keep processing until there are no more blocks available
     #
     def work(server_name, options={}, &proc)
-      include_retries = options.delete(:include_retries)
-      include_retries = false if include_retries.nil?
+      raise 'Job must be started before calling #work' unless running?
       on_exception    = options.delete(:on_exception)
       block_number    = options.delete(:block_number)
       block_count     = options.delete(:block_count)
       options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#work option: #{option.inspect}" }
 
       selector = {
-        query:  { 'server' => { '$exists' => false }, retry_count: { '$exists' => include_retries } },
-        update: { server: server_name, started_at: Time.now },
+        query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
+        update: { '$set' => { server: server_name}, '$currentDate' => { 'started_at' => true }},
         sort:   '_id'
         # full_response: true   returns the entire response object from the server including ‘ok’ and ‘lastErrorObject’.
       }
@@ -137,10 +142,13 @@ module BatchJob
       while message = input_collection.find_and_modify(selector)
         begin
           input_block, header = parse_message(message)
-          output_block = input_block.collect { |record| proc.call(record, header) }
-          output_collection.insert(build_message(output_block, '_id' => header['_id'])) if collect_results?
+          block_id = header['_id']
+          output_block = logger.benchmark_info("#work Processed Block #{block_id}", log_exception: :full, on_exception_level: :error) do
+            input_block.collect { |record| proc.call(record, header) }
+          end
+          output_collection.insert(build_message(output_block, '_id' => block_id)) if collect_output?
           # On successful completion remove the record from the job queue
-          input_collection.remove('_id' => header['_id'])
+          input_collection.remove('_id' => block_id)
           processed_block_count += 1
           processed_record_count += input_block.size
           break if block_count && (processed_block_count >= block_count)
@@ -151,26 +159,65 @@ module BatchJob
             raise(exc)
           end
         rescue Exception => exc
-          logger.error "Failed to process job", exc
+          # Increment the failed_blocks by 1
+          increment(failed_blocks: 1)
+          self.failed_blocks += 1
+
           # Set failure information and increment retry count
-          input_collection.update({'_id' => header['_id']},
+          input_collection.update(
+            {'_id' => header['_id']},
             {
-              '$unset' => 'server_name',
+              '$unset' => {'server' => true},
               '$set' => {
                 'exception' => {
                   'class'       => exc.class.to_s,
                   'message'     => exc.message,
                   'backtrace'   => exc.backtrace || [],
-                  'server_name' => server_name
+                  'server'      => server_name
                 },
-                'retry_count' => header['retry_count'].to_i + 1
+                'failure_count' => header['failure_count'].to_i + 1,
+                'failed'        => true
               }
             }
           )
           on_exception.call(exc) if on_exception
         end
       end
+      # Check if processing is complete
+      if record_count && (blocks_queued == 0)
+        # Check if another thread / worker already completed the job
+        reload
+        complete! unless completed?
+      end
       processed_record_count
+    end
+
+    # Make all failed blocks for this job available for processing again
+    # Parameters:
+    #   block_numbers [Array<Integer>]
+    #     Numbers of the blocks to retry
+    #     Default: Retry all blocks for this job
+    def retry_failed_blocks(block_numbers=nil)
+      selector = {'failed' => { '$exists' => true }}
+      # Apply block_number override if applicable
+      if block_numbers
+        case block_numbers.size
+        when 0
+          return 0
+        when 1
+          selector['_id'] = block_numbers.first
+        else
+          selector['_id'] = { '$in' => block_numbers }
+        end
+      end
+
+      result = input_collection.update(selector, {'$unset' => { 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
+      count = result['nModified']
+      decrement(failed_blocks: count)
+      self.failed_blocks -= count
+      # In case this job instance does not have the latest count on the server
+      self.failed_blocks = 0 if failed_blocks < 0
+      count
     end
 
     # Add a block of records for processing
@@ -182,9 +229,9 @@ module BatchJob
     #     For example the following types are not supported: Date
     # Note:
     #   Not thread-safe. Only call from one thread at a time
-    def <<(block)
+    def input_block(block)
       input_collection.insert(build_message(block, '_id' => record_count + 1))
-      logger.trace('#<< Add record') { data }
+      logger.debug { "#input_block Added #{block.size} record(s)" }
       # Only increment record_count once the job has been saved
       self.record_count += block.size
     end
@@ -197,7 +244,7 @@ module BatchJob
     #
     # Note:
     #   Not thread-safe. Only call from one thread at a time per job instance
-    def load_records(&proc)
+    def input_records(&proc)
       before_count = record_count
       block = []
       loop do
@@ -205,11 +252,12 @@ module BatchJob
         break if record.nil?
         block << record
         if block.size % block_size == 0
-          self << block
+          input_block(block)
           block = []
         end
       end
-      self << block if block.size > 0
+      input_block(block) if block.size > 0
+      logger.debug { "#input_records Added #{record_count - before_count} record(s)" }
       record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
 
@@ -240,7 +288,7 @@ module BatchJob
     #       Default: 65536 ( 64K )
     #
     # Notes:
-    # * Only use this method for UTF-8 data, for binary data use #<< or #add_records
+    # * Only use this method for UTF-8 data, for binary data use #input_block or #input_records
     # * Not thread-safe. Only call from one thread at a time per job instance
     # * All data is converted by this method to UTF-8 since that is how strings
     #   are stored in MongoDB
@@ -268,19 +316,22 @@ module BatchJob
 
       delimiter.force_encoding(UTF8_ENCODING) if delimiter
 
-      batch_count = 0
-      end_index   = nil
-      record      = []
-      count       = record_count
-      buffer      = ''
+      batch_count  = 0
+      end_index    = nil
+      block        = []
+      before_count = record_count
+      buffer       = ''
       loop do
         partial = ''
         # TODO Add optional data cleansing to strip out for example non-printable
         # characters before converting to UTF-8
-        block = io.read(buffer_size)
-        logger.trace('#add_text_stream read from input stream:') { block.inspect }
-        break unless block
-        buffer << block.force_encoding(UTF8_ENCODING)
+        chunk = io.read(buffer_size)
+        unless chunk
+          logger.trace { "#input_stream End of stream reached" }
+          break
+        end
+        logger.trace { "#input_stream Read #{chunk.size} bytes" }
+        buffer << chunk.force_encoding(UTF8_ENCODING)
         if delimiter.nil?
           # Auto detect text line delimiter
           if buffer =~ /\r\n?|\n/
@@ -298,13 +349,13 @@ module BatchJob
         buffer.each_line(delimiter) do |line|
           if line.end_with?(delimiter)
             # Strip off delimiter when placing in record array
-            record << line[0..(end_index ||= (delimiter.size + 1) * -1)]
+            block << line[0..(end_index ||= (delimiter.size + 1) * -1)]
             batch_count += 1
             if batch_count >= block_size
               # Write to Mongo
-              self << record
+              input_block(block)
               batch_count = 0
-              record.clear
+              block.clear
             end
           else
             # The last line in the buffer could be incomplete
@@ -316,13 +367,13 @@ module BatchJob
       end
 
       # Add last line since it may not have been terminated with the delimiter
-      record << buffer if buffer.size > 0
+      block << buffer if buffer.size > 0
 
       # Write partial record to Mongo
-      self << record if record.size > 0
+      input_block(block) if block.size > 0
 
-      logger.debug { "#add_text_stream Added #{self.record_count - count} records" }
-      (count .. self.record_count)
+      logger.debug { "#input_stream Added #{self.record_count - before_count} record(s)" }
+      (before_count .. self.record_count)
     end
 
     # Returns the results of all processing into the supplied stream
@@ -366,12 +417,12 @@ module BatchJob
 
     # Returns the Mongo Collection for the records queue name
     def input_collection
-      @input_collection ||= self.class.work_connection.db["batch_job_records_#{id.to_s}"]
+      @input_collection ||= self.class.work_connection.db["#{self.class.collection_name}_input_#{id.to_s}"]
     end
 
     # Returns the Mongo Collection for the records queue name
     def output_collection
-      @output_collection ||= self.class.work_connection.db["batch_job_results_#{id.to_s}"]
+      @output_collection ||= self.class.work_connection.db["#{self.class.collection_name}_output_#{id.to_s}"]
     end
 
     # Returns [Integer] percent of records completed so far
@@ -408,7 +459,7 @@ module BatchJob
         h[:blocks_processed] = processed
         h[:total_records]    = record_count
         h[:records_per_hour] = ((processed * block_size / (Time.now - started_at)) * 60 * 60).round
-        h[:percent_complete] = (((processed.to_f * block_size) / record_count) * 100).to_i
+        h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * block_size) / record_count) * 100).to_i
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
@@ -425,7 +476,7 @@ module BatchJob
     # All strings within the Array will encoded to UTF-8 for consistency across
     # plain, compressed and encrypted
     def parse_message(message)
-      block = message.delete('data')
+      block = message.delete('block')
       if encrypt || compress
         str = if encrypt
           SymmetricEncryption.cipher.binary_decrypt(block.to_s)
@@ -455,7 +506,7 @@ module BatchJob
         # Without compression or encryption, store the array as is
         block
       end
-      header['data'] = data
+      header['block'] = data
       header
     end
 

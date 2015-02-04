@@ -1,11 +1,11 @@
 require File.join(File.dirname(__FILE__), 'test_helper')
 
-# Unit Test for BatchJob::Simple
+# Unit Test for BatchJob::Single
 class JobTest < Minitest::Test
-  context BatchJob::Simple do
+  context BatchJob::Single do
     setup do
       @description = 'Hello World'
-      @job = BatchJob::Simple.new(
+      @job = BatchJob::Single.new(
         description: @description
       )
     end
@@ -16,7 +16,7 @@ class JobTest < Minitest::Test
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_batch_job', BatchJob::Simple.collection.db.name
+        assert_equal 'test_batch_job', BatchJob::Single.collection.db.name
       end
     end
 
@@ -35,7 +35,7 @@ class JobTest < Minitest::Test
         assert_equal 0, @job.percent_complete
         assert_equal 50, @job.priority
         assert_equal true, @job.repeatable
-        assert_equal 0, @job.retry_count
+        assert_equal 0, @job.failure_count
         assert_nil   @job.run_at
         assert_nil   @job.schedule
         assert_nil   @job.started_at
