@@ -31,7 +31,7 @@ module BatchJob
   end
 
   # Replace the MongoMapper default mongo connection for holding working data.
-  # For example, blocks, records, etc.
+  # For example, slices, records, etc.
   def self.set_mongo_work_connection(connection)
     BatchJob::MultiRecord.work_connection = connection
   end

@@ -35,9 +35,9 @@ class MultiRecordJobTest < Minitest::Test
       end
     end
 
-    context '#input_block' do
-      should 'write blocks' do
-        @lines.each { |line| @job.input_block([line]) }
+    context '#input_slice' do
+      should 'write slices' do
+        @lines.each { |line| @job.input_slice([line]) }
 
         assert_equal @lines.size, @job.record_count
         assert_equal @lines.size, @job.input_collection.count
@@ -45,8 +45,8 @@ class MultiRecordJobTest < Minitest::Test
     end
 
     context '#input_records' do
-      should 'support block size of 1' do
-        @job.block_size = 1
+      should 'support slice size of 1' do
+        @job.slice_size = 1
         lines = @lines.dup
         result = @job.input_records { lines.shift }
         assert_equal (1..@lines.size), result
@@ -55,23 +55,23 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.input_collection.count
       end
 
-      should 'support block size of 2' do
-        @job.block_size = 2
+      should 'support slice size of 2' do
+        @job.slice_size = 2
         lines = @lines.dup
         result = @job.input_records { lines.shift }
         assert_equal (1..@lines.size), result
-        block_count = (0.5 + @lines.size.to_f / 2).to_i
+        slice_count = (0.5 + @lines.size.to_f / 2).to_i
 
         assert_equal @lines.size, @job.record_count
-        assert_equal block_count, @job.input_collection.count
+        assert_equal slice_count, @job.input_collection.count
       end
     end
 
     context '#work' do
       should 'read all records' do
         assert_equal 0, @job.record_count
-        @job.block_size = 1
-        @lines.each { |row| @job.input_block([row]) }
+        @job.slice_size = 1
+        @lines.each { |row| @job.input_slice([row]) }
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -82,13 +82,13 @@ class MultiRecordJobTest < Minitest::Test
           count += 1
         end
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         assert_equal @lines.size, count
       end
 
       should 'retry on exception' do
-        @job.block_size = 1
-        @lines.each { |line| @job.input_block([line]) }
+        @job.slice_size = 1
+        @lines.each { |line| @job.input_slice([line]) }
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -99,7 +99,7 @@ class MultiRecordJobTest < Minitest::Test
           raise 'Oh no'
         end
         assert_equal false, @job.completed?
-        assert_equal @lines.size, @job.failed_blocks
+        assert_equal @lines.size, @job.failed_slices
         assert_equal @lines.size, count
         # Must stay in the queue
         assert_equal @lines.size, @job.input_collection.count
@@ -112,7 +112,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal 0, count
 
         # Make records available for processing again
-        @job.retry_failed_blocks
+        @job.retry_failed_slices
 
         # Re-process the failed jobs
         count = 0
@@ -121,7 +121,7 @@ class MultiRecordJobTest < Minitest::Test
           results << record
           count += 1
         end
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         assert_equal results.size, count
         assert_equal @lines, results
         assert_equal true, @job.completed?
@@ -189,10 +189,10 @@ class MultiRecordJobTest < Minitest::Test
         end
       end
 
-      should 'handle a block size of 1' do
+      should 'handle a slice size of 1' do
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -202,10 +202,10 @@ class MultiRecordJobTest < Minitest::Test
         end
       end
 
-      should 'handle a small stream the same size as block_size' do
+      should 'handle a small stream the same size as slice_size' do
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.block_size = @lines.size
+        @job.slice_size = @lines.size
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count, @job.input_collection.find.to_a
         @job.each_record do |record, header|
@@ -216,7 +216,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle a custom 1 character delimiter' do
         str = @lines.join('$')
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream, delimiter: '$')
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -230,7 +230,7 @@ class MultiRecordJobTest < Minitest::Test
         delimiter = '$DELIMITER$'
         str = @lines.join(delimiter)
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream, delimiter: delimiter)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -245,7 +245,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -264,7 +264,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -284,7 +284,7 @@ class MultiRecordJobTest < Minitest::Test
 
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.block_size = 1
+        @job.slice_size = 1
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
@@ -308,24 +308,24 @@ class MultiRecordJobTest < Minitest::Test
       end
 
       should 'handle 1 result' do
-        @job.input_block([ @lines.first ])
+        @job.input_slice([ @lines.first ])
         @job.start!
-        @job.work('worker') { |block| block }
+        @job.work('worker') { |slice| slice }
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
       end
 
       should 'handle many results' do
-        @job.block_size = 1
-        blocks = @lines.dup
-        @job.input_records { blocks.shift }
+        @job.slice_size = 1
+        slices = @lines.dup
+        @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |block| block }
+        @job.work('worker') { |slice| slice }
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -333,13 +333,13 @@ class MultiRecordJobTest < Minitest::Test
 
       should 'decompress results' do
         @job.compress = true
-        @job.block_size = 1
-        blocks = @lines.dup
-        @job.input_records { blocks.shift }
+        @job.slice_size = 1
+        slices = @lines.dup
+        @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |block| block }
+        @job.work('worker') { |slice| slice }
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -347,13 +347,13 @@ class MultiRecordJobTest < Minitest::Test
 
       should 'decrypt results' do
         @job.encrypt = true
-        @job.block_size = 1
-        blocks = @lines.dup
-        @job.input_records { blocks.shift }
+        @job.slice_size = 1
+        slices = @lines.dup
+        @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |block| block }
+        @job.work('worker') { |slice| slice }
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -362,13 +362,13 @@ class MultiRecordJobTest < Minitest::Test
       should 'decompress & decrypt results' do
         @job.compress = true
         @job.encrypt = true
-        @job.block_size = 1
-        blocks = @lines.dup
-        @job.input_records { blocks.shift }
+        @job.slice_size = 1
+        slices = @lines.dup
+        @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |block| block }
+        @job.work('worker') { |slice| slice }
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_blocks
+        assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect

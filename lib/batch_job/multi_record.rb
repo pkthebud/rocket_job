@@ -26,8 +26,8 @@ module BatchJob
     # and then split apart the array is:
     key :compress_delimiter,      String, default: '|@|'
 
-    # Number of records to include in each block that is processed
-    key :block_size,              Integer, default: 100
+    # Number of records to include in each slice that is processed
+    key :slice_size,              Integer, default: 100
 
     #
     # Values that jobs can update during processing
@@ -36,8 +36,8 @@ module BatchJob
     # Number of records in this job
     key :record_count,            Integer, default: 0
 
-    # Number of blocks that failed to process due to an un-handled exception
-    key :failed_blocks,           Integer, default: 0
+    # Number of slices that failed to process due to an un-handled exception
+    key :failed_slices,           Integer, default: 0
 
     after_destroy :cleanup_records
 
@@ -72,20 +72,20 @@ module BatchJob
       collect_output == true
     end
 
-    # Calls the supplied block for each record available for processing
+    # Calls the supplied slice for each record available for processing
     # Multiple threads can call this method at the same time
     # to increase concurrency.
     #
     # By default it will keep processing until no more records are left for processing.
-    # After each block of records has been processed without raising an exception
+    # After each slice of records has been processed without raising an exception
     # it is removed from the records queue
     #
-    # The result is from the block is written to the output collection if
+    # The result is from the slice is written to the output collection if
     # collect_output? is true
     #
     # Returns the number of records processed
     #
-    # If an exception was thrown the entire block of records is marked with
+    # If an exception was thrown the entire slice of records is marked with
     # the exception that occurred and removed from general by increasing its
     # retry count.
     #
@@ -104,20 +104,20 @@ module BatchJob
     #
     #   on_exception [Proc]
     #     Block of code to execute if an unhandled exception was raised during
-    #     the processing of a block
+    #     the processing of a slice
     #
-    #   block_number [Integer|Array<Integer>]
-    #     Only work on that specific block number(s)
+    #   slice_number [Integer|Array<Integer>]
+    #     Only work on that specific slice number(s)
     #
-    #   block_count [Integer]
-    #     Only process block_count blocks before returning
-    #     Default: Keep processing until there are no more blocks available
+    #   slice_count [Integer]
+    #     Only process slice_count slices before returning
+    #     Default: Keep processing until there are no more slices available
     #
     def work(server_name, options={}, &proc)
       raise 'Job must be started before calling #work' unless running?
       on_exception    = options.delete(:on_exception)
-      block_number    = options.delete(:block_number)
-      block_count     = options.delete(:block_count)
+      slice_number    = options.delete(:slice_number)
+      slice_count     = options.delete(:slice_count)
       options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#work option: #{option.inspect}" }
 
       selector = {
@@ -127,31 +127,31 @@ module BatchJob
         # full_response: true   returns the entire response object from the server including ‘ok’ and ‘lastErrorObject’.
       }
 
-      # Apply block_number override if applicable
-      if block_number
-        if block_number.is_a?(Integer)
-          selector[:query]['_id'] = block_number
+      # Apply slice_number override if applicable
+      if slice_number
+        if slice_number.is_a?(Integer)
+          selector[:query]['_id'] = slice_number
         else
-          selector[:query]['_id'] = { '$in' => block_number }
+          selector[:query]['_id'] = { '$in' => slice_number }
         end
       end
 
-      processed_block_count = 0
+      processed_slice_count = 0
       processed_record_count = 0
-      # find_and_modify is already in a retry block
+      # find_and_modify is already in a retry slice
       while message = input_collection.find_and_modify(selector)
         begin
-          input_block, header = parse_message(message)
-          block_id = header['_id']
-          output_block = logger.benchmark_info("#work Processed Block #{block_id}", log_exception: :full, on_exception_level: :error) do
-            input_block.collect { |record| proc.call(record, header) }
+          input_slice, header = parse_message(message)
+          slice_id = header['_id']
+          output_slice = logger.benchmark_info("#work Processed Block #{slice_id}", log_exception: :full, on_exception_level: :error) do
+            input_slice.collect { |record| proc.call(record, header) }
           end
-          output_collection.insert(build_message(output_block, '_id' => block_id)) if collect_output?
+          output_collection.insert(build_message(output_slice, '_id' => slice_id)) if collect_output?
           # On successful completion remove the record from the job queue
-          input_collection.remove('_id' => block_id)
-          processed_block_count += 1
-          processed_record_count += input_block.size
-          break if block_count && (processed_block_count >= block_count)
+          input_collection.remove('_id' => slice_id)
+          processed_slice_count += 1
+          processed_record_count += input_slice.size
+          break if slice_count && (processed_slice_count >= slice_count)
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           unless exc.message.include?('E11000')
@@ -159,9 +159,9 @@ module BatchJob
             raise(exc)
           end
         rescue Exception => exc
-          # Increment the failed_blocks by 1
-          increment(failed_blocks: 1)
-          self.failed_blocks += 1
+          # Increment the failed_slices by 1
+          increment(failed_slices: 1)
+          self.failed_slices += 1
 
           # Set failure information and increment retry count
           input_collection.update(
@@ -184,7 +184,7 @@ module BatchJob
         end
       end
       # Check if processing is complete
-      if record_count && (blocks_queued == 0)
+      if record_count && (slices_queued == 0)
         # Check if another thread / worker already completed the job
         reload
         complete! unless completed?
@@ -192,53 +192,53 @@ module BatchJob
       processed_record_count
     end
 
-    # Make all failed blocks for this job available for processing again
+    # Make all failed slices for this job available for processing again
     # Parameters:
-    #   block_numbers [Array<Integer>]
-    #     Numbers of the blocks to retry
-    #     Default: Retry all blocks for this job
-    def retry_failed_blocks(block_numbers=nil)
+    #   slice_numbers [Array<Integer>]
+    #     Numbers of the slices to retry
+    #     Default: Retry all slices for this job
+    def retry_failed_slices(slice_numbers=nil)
       selector = {'failed' => { '$exists' => true }}
-      # Apply block_number override if applicable
-      if block_numbers
-        case block_numbers.size
+      # Apply slice_number override if applicable
+      if slice_numbers
+        case slice_numbers.size
         when 0
           return 0
         when 1
-          selector['_id'] = block_numbers.first
+          selector['_id'] = slice_numbers.first
         else
-          selector['_id'] = { '$in' => block_numbers }
+          selector['_id'] = { '$in' => slice_numbers }
         end
       end
 
       result = input_collection.update(selector, {'$unset' => { 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
       count = result['nModified']
-      decrement(failed_blocks: count)
-      self.failed_blocks -= count
+      decrement(failed_slices: count)
+      self.failed_slices -= count
       # In case this job instance does not have the latest count on the server
-      self.failed_blocks = 0 if failed_blocks < 0
+      self.failed_slices = 0 if failed_slices < 0
       count
     end
 
-    # Add a block of records for processing
-    # The number of records in the block should match `:block_size`
+    # Add a slice of records for processing
+    # The number of records in the slice should match `:slice_size`
     #
     # Parameters
-    #   `block` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
+    #   `slice` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
     #     All elements in `array` must be serializable to BSON
     #     For example the following types are not supported: Date
     # Note:
     #   Not thread-safe. Only call from one thread at a time
-    def input_block(block)
-      input_collection.insert(build_message(block, '_id' => record_count + 1))
-      logger.debug { "#input_block Added #{block.size} record(s)" }
+    def input_slice(slice)
+      input_collection.insert(build_message(slice, '_id' => record_count + 1))
+      logger.debug { "#input_slice Added #{slice.size} record(s)" }
       # Only increment record_count once the job has been saved
-      self.record_count += block.size
+      self.record_count += slice.size
     end
 
     # Load each record returned by the supplied Block until it returns nil
     #
-    # The records are automatically grouped into blocks based on :block_size
+    # The records are automatically grouped into slices based on :slice_size
     #
     # Returns [Range<Integer>] range of the record_ids that were added
     #
@@ -246,17 +246,17 @@ module BatchJob
     #   Not thread-safe. Only call from one thread at a time per job instance
     def input_records(&proc)
       before_count = record_count
-      block = []
+      slice = []
       loop do
         record = proc.call
         break if record.nil?
-        block << record
-        if block.size % block_size == 0
-          input_block(block)
-          block = []
+        slice << record
+        if slice.size % slice_size == 0
+          input_slice(slice)
+          slice = []
         end
       end
-      input_block(block) if block.size > 0
+      input_slice(slice) if slice.size > 0
       logger.debug { "#input_records Added #{record_count - before_count} record(s)" }
       record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
@@ -288,7 +288,7 @@ module BatchJob
     #       Default: 65536 ( 64K )
     #
     # Notes:
-    # * Only use this method for UTF-8 data, for binary data use #input_block or #input_records
+    # * Only use this method for UTF-8 data, for binary data use #input_slice or #input_records
     # * Not thread-safe. Only call from one thread at a time per job instance
     # * All data is converted by this method to UTF-8 since that is how strings
     #   are stored in MongoDB
@@ -318,7 +318,7 @@ module BatchJob
 
       batch_count  = 0
       end_index    = nil
-      block        = []
+      slice        = []
       before_count = record_count
       buffer       = ''
       loop do
@@ -345,17 +345,17 @@ module BatchJob
           end
         end
 
-        # Collect 'block_size' lines and write to mongo as a single record
+        # Collect 'slice_size' lines and write to mongo as a single record
         buffer.each_line(delimiter) do |line|
           if line.end_with?(delimiter)
             # Strip off delimiter when placing in record array
-            block << line[0..(end_index ||= (delimiter.size + 1) * -1)]
+            slice << line[0..(end_index ||= (delimiter.size + 1) * -1)]
             batch_count += 1
-            if batch_count >= block_size
+            if batch_count >= slice_size
               # Write to Mongo
-              input_block(block)
+              input_slice(slice)
               batch_count = 0
-              block.clear
+              slice.clear
             end
           else
             # The last line in the buffer could be incomplete
@@ -367,10 +367,10 @@ module BatchJob
       end
 
       # Add last line since it may not have been terminated with the delimiter
-      block << buffer if buffer.size > 0
+      slice << buffer if buffer.size > 0
 
       # Write partial record to Mongo
-      input_block(block) if block.size > 0
+      input_slice(slice) if slice.size > 0
 
       logger.debug { "#input_stream Added #{self.record_count - before_count} record(s)" }
       (before_count .. self.record_count)
@@ -394,24 +394,24 @@ module BatchJob
     def output_stream(io, delimiter=$/)
       output_collection.find({}, sort: '_id', timeout: false) do |cursor|
         cursor.each do |message|
-          block, _ = parse_message(message)
-          io.write(block.join(delimiter) + delimiter)
+          slice, _ = parse_message(message)
+          io.write(slice.join(delimiter) + delimiter)
         end
       end
       io
     end
 
     # Iterate over each record
-    def each_record(&block)
+    def each_record(&slice)
       input_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |message| block.call(*parse_message(message)) }
+        cursor.each { |message| slice.call(*parse_message(message)) }
       end
     end
 
     # Iterate over each result
-    def each_result(&block)
+    def each_result(&slice)
       output_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |message| block.call(*parse_message(message)) }
+        cursor.each { |message| slice.call(*parse_message(message)) }
       end
     end
 
@@ -439,13 +439,13 @@ module BatchJob
       active? && (record_count.to_i > 0) && (input_collection.count == 0) && (output_collection.count == record_count)
     end
 
-    # Returns [Integer] the number of blocks queued for processing
-    def blocks_queued
+    # Returns [Integer] the number of slices queued for processing
+    def slices_queued
       input_collection.count
     end
 
-    # Returns [Integer] the number of blocks already processed
-    def blocks_processed
+    # Returns [Integer] the number of slices already processed
+    def slices_processed
       output_collection.count
     end
 
@@ -454,18 +454,18 @@ module BatchJob
       h = super(time_zone)
       case
       when running? || paused?
-        processed = blocks_processed
-        h[:blocks_queued]    = blocks_queued
-        h[:blocks_processed] = processed
+        processed = slices_processed
+        h[:slices_queued]    = slices_queued
+        h[:slices_processed] = processed
         h[:total_records]    = record_count
-        h[:records_per_hour] = ((processed * block_size / (Time.now - started_at)) * 60 * 60).round
-        h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * block_size) / record_count) * 100).to_i
+        h[:records_per_hour] = ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round
+        h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * slice_size) / record_count) * 100).to_i
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
         h[:total_records]    = record_count
       when queued?
-        h[:blocks_queued]    = blocks_queued
+        h[:slices_queued]    = slices_queued
       end
       h
     end
@@ -476,25 +476,25 @@ module BatchJob
     # All strings within the Array will encoded to UTF-8 for consistency across
     # plain, compressed and encrypted
     def parse_message(message)
-      block = message.delete('block')
+      slice = message.delete('slice')
       if encrypt || compress
         str = if encrypt
-          SymmetricEncryption.cipher.binary_decrypt(block.to_s)
+          SymmetricEncryption.cipher.binary_decrypt(slice.to_s)
         else compress
-          Zlib::Inflate.inflate(block.to_s).force_encoding(UTF8_ENCODING)
+          Zlib::Inflate.inflate(slice.to_s).force_encoding(UTF8_ENCODING)
         end
         # Convert the de-compressed and/or un-encrypted string back into an array
-        block = str.split(compress_delimiter)
+        slice = str.split(compress_delimiter)
       end
-      [ block, message ]
+      [ slice, message ]
     end
 
-    # Builds the message to be stored including the supplied block
-    # Compresses / Encrypts the block according to the job setting
-    def build_message(block, header={})
+    # Builds the message to be stored including the supplied slice
+    # Compresses / Encrypts the slice according to the job setting
+    def build_message(slice, header={})
       data = if encrypt || compress
-        # Convert block of records in a single string
-        str = block.join(compress_delimiter)
+        # Convert slice of records in a single string
+        str = slice.join(compress_delimiter)
         if encrypt
           # Encrypt to binary without applying an encoding such as Base64
           # Use a random_iv with each encryption for better security
@@ -504,9 +504,9 @@ module BatchJob
         end
       else
         # Without compression or encryption, store the array as is
-        block
+        slice
       end
-      header['block'] = data
+      header['slice'] = data
       header
     end
 
