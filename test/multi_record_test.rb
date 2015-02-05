@@ -77,8 +77,8 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         count = 0
-        @job.work('server_name') do |data, header|
-          assert_equal @lines[count], data
+        @job.work do |slice, header|
+          assert_equal @lines[count], slice
           count += 1
         end
         assert_equal true, @job.completed?
@@ -94,7 +94,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         count = 0
-        @job.work('server_name') do |data, header|
+        @job.work do |slice, header|
           count += 1
           raise 'Oh no'
         end
@@ -106,7 +106,7 @@ class MultiRecordJobTest < Minitest::Test
 
         # Should not process failed jobs
         count = 0
-        @job.work('server_name') do |data, header|
+        @job.work do |slice, header|
           count += 1
         end
         assert_equal 0, count
@@ -117,7 +117,7 @@ class MultiRecordJobTest < Minitest::Test
         # Re-process the failed jobs
         count = 0
         results = []
-        @job.work('server_name') do |record, header|
+        @job.work do |record, header|
           results << record
           count += 1
         end
@@ -253,9 +253,9 @@ class MultiRecordJobTest < Minitest::Test
           assert_equal [ @lines[index] ], record
           index += 1
         end
-        # Confirm that the data stored was actually compressed
+        # Confirm that the slice stored was actually compressed
         @job.input_collection.find_one do |record|
-          assert_equal Zlib::Deflate.deflate(@lines.first), record['data'].to_s, record.inspect
+          assert_equal Zlib::Deflate.deflate(@lines.first), record['slice'].to_s, record.inspect
         end
       end
 
@@ -272,9 +272,9 @@ class MultiRecordJobTest < Minitest::Test
           assert_equal [ @lines[index] ], record
           index += 1
         end
-        # Confirm that the data stored was actually encrypted
+        # Confirm that the slice stored was actually encrypted
         @job.input_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=false), record['data'].to_s, record.inspect
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=false), record['slice'].to_s, record.inspect
         end
       end
 
@@ -292,9 +292,9 @@ class MultiRecordJobTest < Minitest::Test
           assert_equal [ @lines[index] ], record
           index += 1
         end
-        # Confirm that the data stored was actually compressed & encrypted
+        # Confirm that the slice stored was actually compressed & encrypted
         @job.input_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=true), record['data'].to_s, record.inspect
+          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=true), record['slice'].to_s, record.inspect
         end
       end
 
@@ -310,7 +310,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle 1 result' do
         @job.input_slice([ @lines.first ])
         @job.start!
-        @job.work('worker') { |slice| slice }
+        @job.work { |slice| slice }
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -323,7 +323,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |slice| slice }
+        @job.work { |slice| slice }
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -337,7 +337,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |slice| slice }
+        @job.work { |slice| slice }
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -351,7 +351,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |slice| slice }
+        @job.work { |slice| slice }
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -366,7 +366,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work('worker') { |slice| slice }
+        @job.work { |slice| slice }
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')

@@ -96,12 +96,6 @@ module BatchJob
     # Thread-safe, can be called by multiple threads at the same time
     #
     # Parameters
-    #   server_name [String]
-    #     A unqiue name for this server instance
-    #     Should only have one server name per machine
-    #     On startup all pending jobs with this 'server_name' will be retried
-    #     TODO Make this a process-wide setting and include PID ( host_name:PID )
-    #
     #   on_exception [Proc]
     #     Block of code to execute if an unhandled exception was raised during
     #     the processing of a slice
@@ -113,7 +107,7 @@ module BatchJob
     #     Only process slice_count slices before returning
     #     Default: Keep processing until there are no more slices available
     #
-    def work(server_name, options={}, &proc)
+    def work(options={}, &block)
       raise 'Job must be started before calling #work' unless running?
       on_exception    = options.delete(:on_exception)
       slice_number    = options.delete(:slice_number)
@@ -122,9 +116,8 @@ module BatchJob
 
       selector = {
         query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-        update: { '$set' => { server: server_name}, '$currentDate' => { 'started_at' => true }},
+        update: { '$set' => { server: Single.instance_name}, '$currentDate' => { 'started_at' => true }},
         sort:   '_id'
-        # full_response: true   returns the entire response object from the server including ‘ok’ and ‘lastErrorObject’.
       }
 
       # Apply slice_number override if applicable
@@ -142,9 +135,13 @@ module BatchJob
       while message = input_collection.find_and_modify(selector)
         begin
           input_slice, header = parse_message(message)
-          slice_id = header['_id']
+          slice_id            = header['_id']
+          record_number       = 0
           output_slice = logger.benchmark_info("#work Processed Block #{slice_id}", log_exception: :full, on_exception_level: :error) do
-            input_slice.collect { |record| proc.call(record, header) }
+            input_slice.collect do |record|
+              record_number += 1
+              block.call(record, header)
+            end
           end
           output_collection.insert(build_message(output_slice, '_id' => slice_id)) if collect_output?
           # On successful completion remove the record from the job queue
@@ -159,27 +156,7 @@ module BatchJob
             raise(exc)
           end
         rescue Exception => exc
-          # Increment the failed_slices by 1
-          increment(failed_slices: 1)
-          self.failed_slices += 1
-
-          # Set failure information and increment retry count
-          input_collection.update(
-            {'_id' => header['_id']},
-            {
-              '$unset' => {'server' => true},
-              '$set' => {
-                'exception' => {
-                  'class'       => exc.class.to_s,
-                  'message'     => exc.message,
-                  'backtrace'   => exc.backtrace || [],
-                  'server'      => server_name
-                },
-                'failure_count' => header['failure_count'].to_i + 1,
-                'failed'        => true
-              }
-            }
-          )
+          set_exception(header, exc, record_number)
           on_exception.call(exc) if on_exception
         end
       end
@@ -244,11 +221,11 @@ module BatchJob
     #
     # Note:
     #   Not thread-safe. Only call from one thread at a time per job instance
-    def input_records(&proc)
+    def input_records(&block)
       before_count = record_count
       slice = []
       loop do
-        record = proc.call
+        record = block.call
         break if record.nil?
         slice << record
         if slice.size % slice_size == 0
@@ -401,17 +378,30 @@ module BatchJob
       io
     end
 
-    # Iterate over each record
-    def each_record(&slice)
+    # Iterate over each input slice
+    def each_input_slice(&block)
       input_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |message| slice.call(*parse_message(message)) }
+        cursor.each { |message| block.call(*parse_message(message)) }
       end
     end
 
-    # Iterate over each result
-    def each_result(&slice)
+    # Iterate over each output slice
+    def each_output_slice(&block)
       output_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each { |message| slice.call(*parse_message(message)) }
+        cursor.each { |message| block.call(*parse_message(message)) }
+      end
+    end
+
+    # Iterate over each failed record, if any
+    def each_failed_record(&block)
+      input_collection.find({'failed' => { '$exists' => true }}, sort: '_id', timeout: false) do |cursor|
+        cursor.each do |message|
+          slice, header = *parse_message(message)
+          exception = header['exception']
+          if exception && (record_number = exception['record_number'])
+            block.call(slice[record_number - 1], header)
+          end
+        end
       end
     end
 
@@ -514,6 +504,32 @@ module BatchJob
     def cleanup_records
       input_collection.drop
       output_collection.drop
+    end
+
+    # Set exception information for a specific slice
+    def set_exception(header, exc, record_number)
+      # Increment the failed_slices by 1
+      increment(failed_slices: 1)
+      self.failed_slices += 1
+
+      # Set failure information and increment retry count
+      input_collection.update(
+        { '_id' => header['_id'] },
+        {
+          '$unset' => { 'server' => true },
+          '$set' => {
+            'exception' => {
+              'class'         => exc.class.to_s,
+              'message'       => exc.message,
+              'backtrace'     => exc.backtrace || [],
+              'server'        => Single.instance_name,
+              'record_number' => record_number
+            },
+            'failure_count' => header['failure_count'].to_i + 1,
+            'failed'        => true
+          }
+        }
+      )
     end
 
   end

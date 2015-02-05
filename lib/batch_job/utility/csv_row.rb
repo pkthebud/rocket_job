@@ -19,6 +19,7 @@ module BatchJob
       #     A single line of CSV data without any line terminators
       def parse(line)
         @io.rewind
+        @io.truncate(0)
         @io << line
         @io.rewind
         @csv.shift
@@ -27,6 +28,7 @@ module BatchJob
       # Return the supplied array as a single line CSV string
       def to_csv(array)
         @io.rewind
+        @io.truncate(0)
         (@csv << array).string
       end
     end

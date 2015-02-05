@@ -1,4 +1,6 @@
 # encoding: UTF-8
+require 'socket'
+require 'sync_attr'
 require 'aasm'
 module BatchJob
   # Batch Job identifies each batch job submission
@@ -23,9 +25,15 @@ module BatchJob
   # as quickly as possible without impacting other batch jobs with a higher priority.
   #
   class Single
+    include SyncAttr
     include MongoMapper::Document
     include AASM
     include SemanticLogger::Loggable
+
+    # Unique Instance name for this process
+    # On startup all pending jobs starting with this server_name will be retried
+    # Default: host_name:PID
+    sync_cattr_accessor(:instance_name) { "#{Socket.gethostname.split('.')[0]}:#{$$}" }
 
     #
     # User definable attributes
