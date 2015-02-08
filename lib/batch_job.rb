@@ -40,6 +40,6 @@ module BatchJob
   # If a non-default connection is being used, be sure to call `set_mongo_connection`
   # and/or `set_mongo_work_connection` prior to calling `create_indexes`
   def self.create_indexes
-    BatchJob::Single.create_indexes
+    warn 'BatchJob.create_indexes is deprecated'
   end
 end

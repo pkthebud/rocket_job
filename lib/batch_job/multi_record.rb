@@ -107,16 +107,22 @@ module BatchJob
     #     Only process slice_count slices before returning
     #     Default: Keep processing until there are no more slices available
     #
+    #   processing_seconds [Integer]
+    #     Number of seconds to process work for when multiple records are being
+    #     processed.
+    #     Default: 0 => No time limit
+    #
     def work(options={}, &block)
       raise 'Job must be started before calling #work' unless running?
-      on_exception    = options.delete(:on_exception)
-      slice_number    = options.delete(:slice_number)
-      slice_count     = options.delete(:slice_count)
-      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#work option: #{option.inspect}" }
+      on_exception       = options.delete(:on_exception)
+      slice_number       = options.delete(:slice_number)
+      slice_count        = options.delete(:slice_count)
+      processing_seconds = options.delete(:processing_seconds) || 0
+      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#work option: #{option.inspect}") }
 
       selector = {
         query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-        update: { '$set' => { server: Single.instance_name}, '$currentDate' => { 'started_at' => true }},
+        update: { '$set' => { server: Server.name }, '$currentDate' => { 'started_at' => true }},
         sort:   '_id'
       }
 
@@ -129,6 +135,7 @@ module BatchJob
         end
       end
 
+      start_time = Time.now if processing_seconds > 0
       processed_slice_count = 0
       processed_record_count = 0
       # find_and_modify is already in a retry slice
@@ -140,6 +147,7 @@ module BatchJob
           output_slice = logger.benchmark_info("#work Processed Block #{slice_id}", log_exception: :full, on_exception_level: :error) do
             input_slice.collect do |record|
               record_number += 1
+              # TODO Skip previously processed records if this is a retry
               block.call(record, header)
             end
           end
@@ -148,7 +156,10 @@ module BatchJob
           input_collection.remove('_id' => slice_id)
           processed_slice_count += 1
           processed_record_count += input_slice.size
+          # If number of blocks to process has been exceeded
           break if slice_count && (processed_slice_count >= slice_count)
+          # If processing time is exceeded
+          break if processing_seconds > 0 && ((Time.now - start_time) >= processing_seconds)
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           unless exc.message.include?('E11000')
@@ -286,7 +297,7 @@ module BatchJob
     #      job.input_stream(io)
     #    end
     def input_stream(io, options={})
-      options = options.dup
+      options     = options.dup
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
       options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#add_records option: #{option.inspect}" }
@@ -522,7 +533,7 @@ module BatchJob
               'class'         => exc.class.to_s,
               'message'       => exc.message,
               'backtrace'     => exc.backtrace || [],
-              'server'        => Single.instance_name,
+              'server'        => Server.name,
               'record_number' => record_number
             },
             'failure_count' => header['failure_count'].to_i + 1,

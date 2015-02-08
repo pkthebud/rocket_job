@@ -1,4 +1,4 @@
-require File.join(File.dirname(__FILE__), 'test_helper')
+require_relative 'test_helper'
 
 # Unit Test for BatchJob::MultiRecord
 class MultiRecordJobTest < Minitest::Test
@@ -141,7 +141,7 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [''], record
         end
       end
@@ -151,7 +151,7 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -173,7 +173,7 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [str], record
         end
       end
@@ -184,7 +184,7 @@ class MultiRecordJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -196,7 +196,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -208,7 +208,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.slice_size = @lines.size
         @job.input_stream(stream)
         assert_equal 1, @job.input_collection.count, @job.input_collection.find.to_a
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -220,7 +220,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream, delimiter: '$')
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -234,7 +234,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream, delimiter: delimiter)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -249,7 +249,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -268,7 +268,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -288,7 +288,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_stream(stream)
         assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
         index = 0
-        @job.each_record do |record, header|
+        @job.each_input_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end

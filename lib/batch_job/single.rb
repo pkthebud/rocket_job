@@ -1,6 +1,4 @@
 # encoding: UTF-8
-require 'socket'
-require 'sync_attr'
 require 'aasm'
 module BatchJob
   # Batch Job identifies each batch job submission
@@ -25,15 +23,9 @@ module BatchJob
   # as quickly as possible without impacting other batch jobs with a higher priority.
   #
   class Single
-    include SyncAttr
     include MongoMapper::Document
     include AASM
     include SemanticLogger::Loggable
-
-    # Unique Instance name for this process
-    # On startup all pending jobs starting with this server_name will be retried
-    # Default: host_name:PID
-    sync_cattr_accessor(:instance_name) { "#{Socket.gethostname.split('.')[0]}:#{$$}" }
 
     #
     # User definable attributes
@@ -42,6 +34,12 @@ module BatchJob
 
     # Description for this job instance
     key :description,             String
+
+    # Class that implements this jobs behavior
+    key :klass,                   String
+
+    # Method that must be invoked to complete this job
+    key :method,                  String, default: 'perform'
 
     # Priority of this job as it relates to other jobs [1..100]
     #   1: Lowest Priority
@@ -113,8 +111,8 @@ module BatchJob
     # Number of times that this job has been retried
     key :failure_count,           Integer, default: 0
 
-    # This job is assigned_to, or was processed by this server
-    key :assigned_to,             String
+    # This job is being processed by, or was processed by this server
+    key :server,                  String
 
     #
     # Values that jobs can update during processing
@@ -124,6 +122,9 @@ module BatchJob
     # Any integer from 0 to 100
     # For Multi-record jobs do not set this value directly
     key :percent_complete,        Integer, default: 0
+
+    # Store the last exception for this job
+    key :exception,               Hash
 
     # Store all job types in this collection
     set_collection_name 'batch_jobs'
@@ -136,6 +137,7 @@ module BatchJob
     # For Single Record jobs, usual processing:
     #   :queued -> :running -> :completed
     #                       -> :paused     -> :running  ( manual )
+    #                       -> :failed     -> :running  ( manual )
     #                       -> :retry      -> :running  ( future date )
     #
     # Any state other than :completed can transition manually to :aborted
@@ -165,6 +167,13 @@ module BatchJob
       # until this job has been resumed
       state :paused
 
+      # Job failed to process and needs to be manually re-tried or aborted
+      state :failed
+
+      # Job failed to process previously and is scheduled to be retried at a
+      # future date
+      state :retry
+
       # Job was aborted and cannot be resumed ( End state )
       state :aborted
 
@@ -184,6 +193,15 @@ module BatchJob
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :completed
+      end
+
+      event :fail do
+        after do
+          self.completed_at = Time.now
+          set(state: state, completed_at: completed_at)
+          UserMailer.batch_job_failed(self).deliver if email_addresses.present?
+        end
+        transitions from: :running, to: :failed
       end
 
       event :pause do
@@ -276,7 +294,73 @@ module BatchJob
       (count ** 4) + 15 + (rand(30)*(count+1))
     end
 
+    # Calls the perform method for the class specified in this job
+    # Returns the result of the perform, but nothing is done with the result.
+    #
+    # If an exception is thrown the job is marked as failed and the exception
+    # is set in the job itself.
+    #
+    # If the mongo_ha gem has been loaded, then the connection to mongo is
+    # automatically re-established and the job will resume anytime a
+    # Mongo connection failure occurs.
+    #
+    # Thread-safe, can be called by multiple threads at the same time
+    #
+    # Parameters
+    #   on_exception [Proc]
+    #     Block of code to execute if an unhandled exception was raised during
+    #     the processing of a slice
+    def work(options={}, &block)
+      raise 'Job must be started before calling #work' unless running?
+      on_exception       = options.delete(:on_exception)
+      # Not used. Always returns after this entire job has been processed
+      processing_seconds = options.delete(:processing_seconds) || 0
+      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#work option: #{option.inspect}") }
+
+      worker = klass.constantize.new
+      worker.batch_job = job
+      args = parameters['_parms']
+      worker.send(method, *args)
+    rescue Exception => exc
+      set_exception(header, exc, record_number)
+      on_exception.call(exc) if on_exception
+    end
+
+    # Returns the next job to work on in priority based order
+    # Returns nil if there are currently no queued jobs, or processing batch jobs
+    #   with records that require processing
+    #
+    # If a job is in queued state it will be started
+    def self.next_job(server)
+      #job = where(state: { :$in => ['queued', 'processing'] } ).order(:priority.desc).limit(1).first
+      job = Job.where(state: 'queued').order(:priority.desc).limit(1).first
+      job.start if job && job.pending?
+      job
+
+      find_and_modify(
+        # (state = 'queued' AND assigned_to = nil) OR (state = 'processing')
+        query: { state: { :$in => ['queued', 'processing'] } },
+        sort: [['priority', 'asc'], ['created_at', 'asc']],
+        update: { 'assigned_to' => name },
+        new: true
+      )
+
+    end
+
     private
-    @@work_connection = nil
+
+    # Set exception information for this job
+    def set_exception(exc)
+      self.server = nil
+      self.failure_count += 1
+      self.exception = {
+        'class'         => exc.class.to_s,
+        'message'       => exc.message,
+        'backtrace'     => exc.backtrace || [],
+        'server'        => Server.name,
+      }
+      fail!
+    end
+
   end
 end

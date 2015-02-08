@@ -1,4 +1,4 @@
-require File.join(File.dirname(__FILE__), 'test_helper')
+require_relative 'test_helper'
 
 # Unit Test for BatchJob::Single
 class JobTest < Minitest::Test
@@ -23,7 +23,7 @@ class JobTest < Minitest::Test
     context '#save!' do
       should 'save a blank job' do
         @job.save!
-        assert_nil   @job.assigned_to
+        assert_nil   @job.server
         assert_nil   @job.completed_at
         assert       @job.created_at
         assert_equal @description, @job.description

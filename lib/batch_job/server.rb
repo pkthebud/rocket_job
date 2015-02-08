@@ -1,4 +1,6 @@
 # encoding: UTF-8
+require 'socket'
+require 'sync_attr'
 module BatchJob
   # Server
   #
@@ -42,6 +44,32 @@ module BatchJob
   #
   class Server
     include MongoMapper::Document
+    include SyncAttr
+    include SemanticLogger::Loggable
+
+    # Unique Instance name for this process
+    # Default: host_name:PID
+    sync_cattr_accessor(:name) { "#{Socket.gethostname.split('.')[0]}:#{$$}" }
+
+    # Returns [BatchJob::Server] the unique server instance for this process
+    sync_cattr_reader(:server) do
+      create_indexes
+      server = where(name: name).first
+      if server
+        server.perform_recovery
+        server.set(started_at: Time.now)
+      else
+        server = create(name: name, started_at: Time.now)
+        server.build_heartbeat
+      end
+      # TODO Register kill signal handler
+      #
+      server
+    end
+
+    # Current state for the server
+    # Default: :starting
+    sync_cattr_accessor(:state) { :starting }
 
     # Unique Name of this server instance
     #   Defaults to the `hostname` but _must_ be overriden if mutiple Server instances
@@ -54,7 +82,7 @@ module BatchJob
     key :state,              Symbol, default: :available
 
     # The maximum number of worker threads
-    #   If set, it will override the default value in Batch::Config
+    #   If set, it will override the default value in BatchJob::Config
     key :max_threads,        Integer
 
     # When this server process was started
@@ -67,7 +95,7 @@ module BatchJob
     key :pid,                Integer
 
     # The heartbeat information for this server
-    one :heartbeat,          class_name: 'Batch::Heartbeat'
+    one :heartbeat,          class_name: 'BatchJob::Heartbeat'
 
     # State Machine events and transitions
     #
@@ -75,55 +103,64 @@ module BatchJob
     #              -> :stopped     -> :available  ( on restart )
     #
 
-    # Start this server
-    #   The same name name must be passed in every time to ensure proper
-    #   recovery on re-start
-    #
-    #   name:
-    #     Unique name to use for this Batch Server instance
-    #     Default: `hostname`
-    def self.start(name=nil)
-      name ||= `hostname`
-      server = where(name: 'name').first
-      if server
-        server.perform_recovery
-        server.set(started_at: Time.now)
-      else
-        server = create(name: 'name', started_at: Time.now)
+    # Run the server process
+    # Parameters
+    #   server_name
+    #     The same name must be passed in every time to ensure proper
+    #     recovery on re-start
+    def self.run(server_name=nil)
+      self.name = server_name if server_name
+      Thread.current.name = 'BatchJob.run'
+
+      # Start worker threads
+      threads = 1
+
+      loop do
+        sleep 30
+        # Check on worker threads, and gather statistics
+        server.set('heartbeat.updated_at', Time.now)
+
+        # Reload the server model every 5 minutes in case its config was changed
+        # server.reload
+
       end
-      server
+    rescue Exception => exc
+      logger.error('BatchJob::Server is stopping due to an exception', exc)
     end
 
     # Create indexes
     def self.create_indexes
       ensure_index [[:name, 1]], background: true, unique: true
+      # Also create indexes for the jobs collection
+      Single.create_indexes
     end
 
-    # Check if their was a previous instance if this server running
+    private
+
+    # Check if their was a previous instance of this server running
     # If so, re-queue all of its jobs
     def perform_recovery
-      Job.where()
+      #Job.where()
     end
 
-    # Returns the next job to work on in priority based order
-    # Returns nil if there are currently no queued jobs, or processing batch jobs
-    #   with records that require processing
-    #
-    # If a job is in queued state it will be started
-    def next_job
-      #job = where(state: { :$in => ['queued', 'processing'] } ).order(:priority.desc).limit(1).first
-      job = Job.where(state: 'queued').order(:priority.desc).limit(1).first
-      job.start if job && job.pending?
-      job
-
-      find_and_modify(
-        # (state = 'queued' AND assigned_to = nil) OR (state = 'processing')
-        query: { state: { :$in => ['queued', 'processing'] } },
-        sort: [['priority', 'asc'], ['created_at', 'asc']],
-        update: { 'assigned_to' => name },
-        new: true
-        )
-
+    # Keep process jobs until the shutdown semaphore is set
+    def process_jobs(id)
+      Thread.current.name = "BatchJob::Server.process_jobs##{id}"
+      logger.debug 'Started'
+      loop do
+        if job = next_job
+          logger.benchmark_debug("Processing #{job.id}: #{job.description}", on_exception_level: :error, log_exception: :full) do
+            job.work
+          end
+        else
+          # TODO Use exponential back-off algorithm
+          sleep BatchJob::Config.instance.max_poll_interval
+        end
+        break if self.class.state == :shutdown
+      end
+      logger.debug 'Stopping thread due to shutdown request'
+    rescue Exception => exc
+      logger.fatal('Unhandled exception in job processing thread', exc)
     end
 
   end
