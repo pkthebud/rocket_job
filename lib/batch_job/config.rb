@@ -24,7 +24,7 @@ module BatchJob
     key :max_worker_threads,         Integer, default: 10
 
     # Number of seconds between heartbeats from Batch Server processes
-    key :server_heartbeat_seconds,   Integer, default: 5
+    key :heartbeat_seconds,          Integer, default: 5
 
     # Maximum number of seconds between checks for new jobs
     key :max_poll_interval,          Integer, default: 5

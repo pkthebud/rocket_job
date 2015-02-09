@@ -39,7 +39,7 @@ module BatchJob
     key :klass,                   String
 
     # Method that must be invoked to complete this job
-    key :method,                  String, default: 'perform'
+    key :method,                  Symbol, default: :perform
 
     # Priority of this job as it relates to other jobs [1..100]
     #   1: Lowest Priority
@@ -188,6 +188,7 @@ module BatchJob
 
       event :complete do
         after do
+          self.percent_complete = 100
           self.completed_at = Time.now
           set(state: state, completed_at: completed_at)
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
@@ -294,36 +295,34 @@ module BatchJob
       (count ** 4) + 15 + (rand(30)*(count+1))
     end
 
-    # Calls the perform method for the class specified in this job
-    # Returns the result of the perform, but nothing is done with the result.
+    # Invokes the worker to process this job
+    #
+    # Returns the result of the method called
     #
     # If an exception is thrown the job is marked as failed and the exception
     # is set in the job itself.
     #
-    # If the mongo_ha gem has been loaded, then the connection to mongo is
-    # automatically re-established and the job will resume anytime a
-    # Mongo connection failure occurs.
-    #
     # Thread-safe, can be called by multiple threads at the same time
-    #
-    # Parameters
-    #   on_exception [Proc]
-    #     Block of code to execute if an unhandled exception was raised during
-    #     the processing of a slice
-    def work(options={}, &block)
+    def work(_=nil)
+      # Useful when #work is called directly without going through .next_job
+      if queued?
+        self.server = Server.name
+        start!
+      end
       raise 'Job must be started before calling #work' unless running?
-      on_exception       = options.delete(:on_exception)
-      # Not used. Always returns after this entire job has been processed
-      processing_seconds = options.delete(:processing_seconds) || 0
-      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#work option: #{option.inspect}") }
-
-      worker = klass.constantize.new
-      worker.batch_job = job
-      args = parameters['_parms']
-      worker.send(method, *args)
+      worker = nil
+      logger.benchmark_info("Called #{self.klass}##{self.method}", log_exception: :full, on_exception_level: :error) do
+        worker           = self.klass.constantize.new
+        worker.batch_job = self
+        args             = self.parameters['_params']
+        worker.send(self.method, *args)
+      end
+      complete!
+      true
     rescue Exception => exc
-      set_exception(header, exc, record_number)
-      on_exception.call(exc) if on_exception
+      worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
+      set_exception(exc)
+      false
     end
 
     # Returns the next job to work on in priority based order
@@ -331,20 +330,24 @@ module BatchJob
     #   with records that require processing
     #
     # If a job is in queued state it will be started
-    def self.next_job(server)
-      #job = where(state: { :$in => ['queued', 'processing'] } ).order(:priority.desc).limit(1).first
-      job = Job.where(state: 'queued').order(:priority.desc).limit(1).first
-      job.start if job && job.pending?
-      job
+    def self.next_job
+      query = {
+        '$or' => [
+          { 'state' => 'queued' },
+          { 'state' => 'running', _type: "BatchJob::MultiRecord" }
+        ]
+      }
 
-      find_and_modify(
-        # (state = 'queued' AND assigned_to = nil) OR (state = 'processing')
-        query: { state: { :$in => ['queued', 'processing'] } },
-        sort: [['priority', 'asc'], ['created_at', 'asc']],
-        update: { 'assigned_to' => name },
-        new: true
-      )
-
+      if doc = find_and_modify(
+          query:  query,
+          sort:   [['priority', 'asc'], ['created_at', 'asc']],
+          update: { '$set' => { 'server' => Server.name, 'state' => 'running' } }
+        )
+        job = BatchJob::Single.load(doc)
+        # Also update in-memory state
+        job.start unless job.running?
+        job
+      end
     end
 
     private

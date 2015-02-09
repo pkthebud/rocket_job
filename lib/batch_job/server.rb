@@ -59,11 +59,12 @@ module BatchJob
         server.perform_recovery
         server.set(started_at: Time.now)
       else
-        server = create(name: name, started_at: Time.now)
+        server = new(name: name, started_at: Time.now)
         server.build_heartbeat
+        server.save!
       end
-      # TODO Register kill signal handler
-      #
+      register_signal_handlers
+      self.state = :running
       server
     end
 
@@ -83,7 +84,7 @@ module BatchJob
 
     # The maximum number of worker threads
     #   If set, it will override the default value in BatchJob::Config
-    key :max_threads,        Integer
+    key :max_threads,        Integer, default: 3
 
     # When this server process was started
     key :started_at,         Time
@@ -113,17 +114,26 @@ module BatchJob
       Thread.current.name = 'BatchJob.run'
 
       # Start worker threads
-      threads = 1
+      threads = server.max_threads.times.collect do |i|
+        Thread.new(server, i) do |server, i|
+          server.send(:process_jobs, i)
+        end
+      end
 
       loop do
-        sleep 30
-        # Check on worker threads, and gather statistics
-        server.set('heartbeat.updated_at', Time.now)
+        sleep Config.instance.heartbeat_seconds
+
+        # Update heartbeat so that monitoring tools know that this server is alive
+        server.set('heartbeat.updated_at' => Time.now)
 
         # Reload the server model every 5 minutes in case its config was changed
         # server.reload
 
+        break if shutting_down?
       end
+      logger.debug 'Waiting for worker threads to stop'
+      threads.join
+      logger.debug 'Shutdown'
     rescue Exception => exc
       logger.error('BatchJob::Server is stopping due to an exception', exc)
     end
@@ -135,12 +145,18 @@ module BatchJob
       Single.create_indexes
     end
 
+    # Is the server shutting down?
+    def self.shutting_down?
+      state == :shutdown
+    end
+
     private
 
     # Check if their was a previous instance of this server running
     # If so, re-queue all of its jobs
     def perform_recovery
-      #Job.where()
+      # TODO re-queue previous jobs
+      #Single.where()
     end
 
     # Keep process jobs until the shutdown semaphore is set
@@ -148,19 +164,32 @@ module BatchJob
       Thread.current.name = "BatchJob::Server.process_jobs##{id}"
       logger.debug 'Started'
       loop do
-        if job = next_job
-          logger.benchmark_debug("Processing #{job.id}: #{job.description}", on_exception_level: :error, log_exception: :full) do
-            job.work
-          end
+        if job = Single.next_job
+          job.work
         else
           # TODO Use exponential back-off algorithm
           sleep BatchJob::Config.instance.max_poll_interval
         end
-        break if self.class.state == :shutdown
+        break if self.class.shutting_down?
       end
       logger.debug 'Stopping thread due to shutdown request'
     rescue Exception => exc
       logger.fatal('Unhandled exception in job processing thread', exc)
+    end
+
+    # Register handlers for the various signals
+    # Term:
+    #   Perform clean shutdown
+    #
+    def self.register_signal_handlers
+      begin
+        Signal.trap "SIGTERM" do
+          Server.status = :shutdown
+          logger.warn "Shutdown signal (SIGTERM) received. Will shutdown as soon as active jobs/slices have completed."
+        end
+      rescue Exception
+        logger.warn "SIGTERM handler not installed. Not able to shutdown gracefully"
+      end
     end
 
   end

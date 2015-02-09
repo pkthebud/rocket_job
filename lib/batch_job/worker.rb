@@ -14,17 +14,23 @@ module BatchJob
     end
 
     module ClassMethods
-      def self.async_perform(*args)
+      def async(method, *args)
         job = Single.new(
           klass: name,
-          parameters: { '_parms' => args }
+          method: method.to_sym,
+          parameters: { '_params' => args }
         )
         if BatchJob::Config.test_mode
           job.start
           job.work
         else
-          job.start!
+          job.save!
         end
+        job
+      end
+
+      def async_perform(*args)
+        async(:perform, *args)
       end
 
     end

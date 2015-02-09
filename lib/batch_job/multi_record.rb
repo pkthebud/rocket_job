@@ -112,9 +112,8 @@ module BatchJob
     #     processed.
     #     Default: 0 => No time limit
     #
-    def work(options={}, &block)
+    def work(options={})
       raise 'Job must be started before calling #work' unless running?
-      on_exception       = options.delete(:on_exception)
       slice_number       = options.delete(:slice_number)
       slice_count        = options.delete(:slice_count)
       processing_seconds = options.delete(:processing_seconds) || 0
@@ -136,11 +135,17 @@ module BatchJob
       end
 
       start_time = Time.now if processing_seconds > 0
-      processed_slice_count = 0
+      processed_slice_count  = 0
       processed_record_count = 0
+      worker                 = nil
+      args                   = self.parameters['_params']
       # find_and_modify is already in a retry slice
       while message = input_collection.find_and_modify(selector)
         begin
+          if worker.nil?
+            worker           = self.klass.constantize.new
+            worker.batch_job = job
+          end
           input_slice, header = parse_message(message)
           slice_id            = header['_id']
           record_number       = 0
@@ -148,7 +153,7 @@ module BatchJob
             input_slice.collect do |record|
               record_number += 1
               # TODO Skip previously processed records if this is a retry
-              block.call(record, header)
+              worker.send(self.method, *args, record, header)
             end
           end
           output_collection.insert(build_message(output_slice, '_id' => slice_id)) if collect_output?
@@ -160,6 +165,7 @@ module BatchJob
           break if slice_count && (processed_slice_count >= slice_count)
           # If processing time is exceeded
           break if processing_seconds > 0 && ((Time.now - start_time) >= processing_seconds)
+          break if Server.shutting_down?
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           unless exc.message.include?('E11000')
@@ -167,8 +173,8 @@ module BatchJob
             raise(exc)
           end
         rescue Exception => exc
+          worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
           set_exception(header, exc, record_number)
-          on_exception.call(exc) if on_exception
         end
       end
       # Check if processing is complete

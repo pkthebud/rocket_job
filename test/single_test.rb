@@ -1,12 +1,16 @@
 require_relative 'test_helper'
+require_relative 'workers/single'
 
 # Unit Test for BatchJob::Single
-class JobTest < Minitest::Test
+class SingleTest < Minitest::Test
   context BatchJob::Single do
     setup do
       @description = 'Hello World'
+      @parameters  = { '_params' => [ 1 ]}
       @job = BatchJob::Single.new(
-        description: @description
+        description: @description,
+        klass:       'Workers::Single',
+        parameters:  @parameters
       )
     end
 
@@ -31,7 +35,7 @@ class JobTest < Minitest::Test
         assert_equal 0, @job.email_addresses.count
         assert_nil   @job.expires_at
         assert_nil   @job.group
-        assert_equal({}, @job.parameters)
+        assert_equal @parameters, @job.parameters
         assert_equal 0, @job.percent_complete
         assert_equal 50, @job.priority
         assert_equal true, @job.repeatable
@@ -51,6 +55,24 @@ class JobTest < Minitest::Test
         assert_equal @description, h[:description]
         assert h[:wait_seconds]
         assert h[:status] =~ /Queued for \d+.\d\d seconds/
+      end
+    end
+
+    context '#work' do
+      should 'call default perform method' do
+        @job.start!
+        assert_equal true, @job.work
+        assert_equal true, @job.completed?
+        assert_equal 2,    Workers::Single.result
+      end
+
+      should 'call specific method' do
+        @job.method = :sum
+        @job.parameters = { '_params' => [ 23, 45 ]}
+        @job.start!
+        assert_equal true, @job.work
+        assert_equal true, @job.completed?
+        assert_equal 68,    Workers::Single.result
       end
     end
 
