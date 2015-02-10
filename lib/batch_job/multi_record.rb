@@ -7,17 +7,13 @@ module BatchJob
     #
     # The following attributes are set when the job is created
 
-    # Whether to store results in a separate collection, or to discard any results
-    # returned when records were processed
-    key :collect_output,         Boolean, default: false
-
     # Compress all working data
-    # The parameters are not affected in any way, just the data stored in the
+    # The arguments are not affected in any way, just the data stored in the
     # records and results collections will compressed
     key :compress,                Boolean, default: false
 
     # Encrypt all working data
-    # The parameters are not affected in any way, just the data stored in the
+    # The arguments are not affected in any way, just the data stored in the
     # records and results collections will be encrypted
     key :encrypt,                 Boolean, default: false
 
@@ -39,15 +35,15 @@ module BatchJob
     # Number of slices that failed to process due to an un-handled exception
     key :failed_slices,           Integer, default: 0
 
+    # Used internally to allow other workers to also work on this job
+    # when it is in :running state
+    key :parallel,                Boolean, default: false
+
     after_destroy :cleanup_records
 
-    validates_presence_of :record_count
-
-    # State Machine events and transitions
-    #
-    # Usual processing:
-    #   :queued -> :loading -> :processing -> :finishing -> :completed
-    #
+    validates_presence_of :record_count, :compress_delimiter,
+      :slice_size, :record_count, :failed_slices
+    # :compress, :encrypt, :parallel
 
     # Use a separate Mongo connection for the Records and Results
     # Allows the records and results to be stored in a separate Mongo database
@@ -125,40 +121,34 @@ module BatchJob
         sort:   '_id'
       }
 
-      # Apply slice_number override if applicable
-      if slice_number
-        if slice_number.is_a?(Integer)
-          selector[:query]['_id'] = slice_number
-        else
-          selector[:query]['_id'] = { '$in' => slice_number }
+      logger.tagged(self.id.to_s) do
+        # Apply slice_number override if applicable
+        if slice_number
+          if slice_number.is_a?(Integer)
+            selector[:query]['_id'] = slice_number
+          else
+            selector[:query]['_id'] = { '$in' => slice_number }
+          end
         end
-      end
 
-      start_time = Time.now if processing_seconds > 0
-      processed_slice_count  = 0
-      processed_record_count = 0
-      worker                 = nil
-      args                   = self.parameters['_params']
-      # find_and_modify is already in a retry slice
-      while message = input_collection.find_and_modify(selector)
-        begin
-          if worker.nil?
-            worker           = self.klass.constantize.new
-            worker.batch_job = job
-          end
+        start_time = Time.now if processing_seconds > 0
+        processed_slice_count  = 0
+        processed_record_count = 0
+        worker                 = self.klass.constantize.new
+        worker.batch_job       = self
+        unless self.parallel
+          self.parallel = true
+          # before_perform
+          call_method(worker, :before)
+          # Save `parallel` to allow other workers to start processing this job
+          # and to save any other changes made in the before_perform
+          save!
+        end
+
+        # find_and_modify is already in a retry slice
+        while message = input_collection.find_and_modify(selector)
           input_slice, header = parse_message(message)
-          slice_id            = header['_id']
-          record_number       = 0
-          output_slice = logger.benchmark_info("#work Processed Block #{slice_id}", log_exception: :full, on_exception_level: :error) do
-            input_slice.collect do |record|
-              record_number += 1
-              # TODO Skip previously processed records if this is a retry
-              worker.send(self.method, *args, record, header)
-            end
-          end
-          output_collection.insert(build_message(output_slice, '_id' => slice_id)) if collect_output?
-          # On successful completion remove the record from the job queue
-          input_collection.remove('_id' => slice_id)
+          process_slice(worker, input_slice, header)
           processed_slice_count += 1
           processed_record_count += input_slice.size
           # If number of blocks to process has been exceeded
@@ -166,24 +156,19 @@ module BatchJob
           # If processing time is exceeded
           break if processing_seconds > 0 && ((Time.now - start_time) >= processing_seconds)
           break if Server.shutting_down?
-        rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
-          # Ignore duplicates since it means the job was restarted
-          unless exc.message.include?('E11000')
-            logger.fatal "Stopping work due to unhandled Mongo Exception", exc
-            raise(exc)
-          end
-        rescue Exception => exc
-          worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-          set_exception(header, exc, record_number)
         end
+        # Check if processing is complete
+        if self.record_count && (self.slices_queued == 0)
+          # Check if another thread / worker already completed the job
+          reload
+          unless completed?
+            # after_perform
+            call_method(worker, :after)
+            complete!
+          end
+        end
+        processed_record_count
       end
-      # Check if processing is complete
-      if record_count && (slices_queued == 0)
-        # Check if another thread / worker already completed the job
-        reload
-        complete! unless completed?
-      end
-      processed_record_count
     end
 
     # Make all failed slices for this job available for processing again
@@ -306,7 +291,7 @@ module BatchJob
       options     = options.dup
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
-      options.each { |option| warn "Ignoring unknown BatchJob::MultiRecord#add_records option: #{option.inspect}" }
+      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#add_records option: #{option.inspect}") }
 
       delimiter.force_encoding(UTF8_ENCODING) if delimiter
 
@@ -477,9 +462,52 @@ module BatchJob
       h
     end
 
-    private
+    # Drop the input and output collections
+    def cleanup_records
+      input_collection.drop
+      output_collection.drop
+    end
 
-    # Returns [Array<String>] The decompressed / un-encrypted data string if applicable
+    protected
+
+    # Process a single message from Mongo
+    # A message consists of a header and the slice of records to process
+    # If the message is successfully processed it will be removed from the input collection
+    def process_slice(worker, input_slice, header)
+      slice_id            = header['_id']
+      record_number       = 0
+      logger.tagged(slice_id) do
+        output_slice = logger.benchmark_info("#work Processed Block #{slice_id}") do
+          input_slice.collect do |record|
+            record_number += 1
+            # TODO Skip previously processed records if this is a retry
+            # perform
+            logger.benchmark_info("#{self.klass}##{self.method}", metric: "Custom/#{self.method}/#{self.klass.underscore}", log_exception: :full, on_exception_level: :error) do
+              worker.send(self.method, *self.arguments, record, header)
+            end
+          end
+        end
+
+        # Ignore duplicates on insert into output_collection since it successfully completed previously
+        begin
+          output_collection.insert(build_message(output_slice, '_id' => slice_id)) if self.collect_output?
+        rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
+          # Ignore duplicates since it means the job was restarted
+          unless exc.message.include?('E11000')
+            logger.fatal "Stopping work due to unhandled Mongo Exception", exc
+            raise(exc)
+          end
+        end
+
+        # On successful completion remove the record from the job queue
+        input_collection.remove('_id' => slice_id)
+      end
+    rescue Exception => exc
+      worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
+      set_exception(header, exc, record_number)
+    end
+
+    # Returns [Array<String>, <Hash>] The decompressed / un-encrypted data string if applicable
     # All strings within the Array will encoded to UTF-8 for consistency across
     # plain, compressed and encrypted
     def parse_message(message)
@@ -515,12 +543,6 @@ module BatchJob
       end
       header['slice'] = data
       header
-    end
-
-    # Drop the records collection
-    def cleanup_records
-      input_collection.drop
-      output_collection.drop
     end
 
     # Set exception information for a specific slice

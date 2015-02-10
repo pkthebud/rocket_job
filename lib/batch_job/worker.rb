@@ -14,12 +14,22 @@ module BatchJob
     end
 
     module ClassMethods
-      def async(method, *args)
-        job = Single.new(
-          klass: name,
-          method: method.to_sym,
-          parameters: { '_params' => args }
-        )
+      def later(method, *args, &block)
+        job = if block
+          j = MultiRecord.new(
+            klass:     name,
+            method:    method.to_sym,
+            arguments: args
+          )
+          block.call(j)
+          j
+        else
+          Single.new(
+            klass:     name,
+            method:    method.to_sym,
+            arguments: args
+          )
+        end
         if BatchJob::Config.test_mode
           job.start
           job.work
@@ -29,8 +39,8 @@ module BatchJob
         job
       end
 
-      def async_perform(*args)
-        async(:perform, *args)
+      def perform_later(*args, &block)
+        later(:perform, *args, &block)
       end
 
     end

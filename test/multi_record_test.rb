@@ -1,4 +1,5 @@
 require_relative 'test_helper'
+require_relative 'workers/multi_record'
 
 # Unit Test for BatchJob::MultiRecord
 class MultiRecordJobTest < Minitest::Test
@@ -15,8 +16,9 @@ class MultiRecordJobTest < Minitest::Test
       ]
       @job = BatchJob::MultiRecord.create(
         description:     @description,
-        collect_output: true,
+        collect_output:  true,
         repeatable:      true,
+        klass:           'Workers::MultiRecord',
       )
     end
 
@@ -77,8 +79,9 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         count = 0
-        @job.work do |slice, header|
-          assert_equal @lines[count], slice
+        @job.work
+        @job.each_output_slice do |slice, header|
+          assert_equal @lines[count], slice.first
           count += 1
         end
         assert_equal true, @job.completed?
@@ -87,43 +90,39 @@ class MultiRecordJobTest < Minitest::Test
       end
 
       should 'retry on exception' do
+        @job.method = :oh_no
         @job.slice_size = 1
         @lines.each { |line| @job.input_slice([line]) }
         @job.start!
 
         assert_equal @lines.size, @job.record_count
 
-        count = 0
-        @job.work do |slice, header|
-          count += 1
-          raise 'Oh no'
-        end
-        assert_equal false, @job.completed?
+        # New jobs should fail
+        @job.work
         assert_equal @lines.size, @job.failed_slices
-        assert_equal @lines.size, count
+        assert_equal 0, @job.slices_processed
         # Must stay in the queue
-        assert_equal @lines.size, @job.input_collection.count
+        assert_equal @lines.size, @job.slices_queued
+        assert_equal false, @job.completed?
 
         # Should not process failed jobs
-        count = 0
-        @job.work do |slice, header|
-          count += 1
-        end
-        assert_equal 0, count
+        @job.work
+        assert_equal @lines.size, @job.failed_slices
+        assert_equal 0, @job.slices_processed
+        # Must stay in the queue
+        assert_equal @lines.size, @job.slices_queued
+        assert_equal false, @job.completed?
 
         # Make records available for processing again
         @job.retry_failed_slices
 
         # Re-process the failed jobs
-        count = 0
-        results = []
-        @job.work do |record, header|
-          results << record
-          count += 1
-        end
+        @job.method = :perform
+        @job.work
+        assert_equal @lines.size, @job.slices_processed
+        # Must stay in the queue
+        assert_equal 0, @job.slices_queued
         assert_equal 0, @job.failed_slices
-        assert_equal results.size, count
-        assert_equal @lines, results
         assert_equal true, @job.completed?
       end
     end
@@ -310,7 +309,7 @@ class MultiRecordJobTest < Minitest::Test
       should 'handle 1 result' do
         @job.input_slice([ @lines.first ])
         @job.start!
-        @job.work { |slice| slice }
+        @job.work
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -323,7 +322,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work { |slice| slice }
+        @job.work
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -337,7 +336,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work { |slice| slice }
+        @job.work
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -351,7 +350,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work { |slice| slice }
+        @job.work
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')
@@ -366,7 +365,7 @@ class MultiRecordJobTest < Minitest::Test
         slices = @lines.dup
         @job.input_records { slices.shift }
         @job.start!
-        @job.work { |slice| slice }
+        @job.work
         assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
         stream = StringIO.new('')

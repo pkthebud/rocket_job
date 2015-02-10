@@ -70,9 +70,10 @@ module BatchJob
     key :repeatable,              Boolean, default: true
 
     # When the job completes destroy it from both the database and the UI
+    # TODO
     key :destroy_on_completion,   Boolean, default: false
 
-    # Any user supplied job parameters held in a Hash
+    # Any user supplied arguments for the method invocation
     # All keys must be UTF-8 strings. The values can be any valid BSON type:
     #   Integer
     #   Float
@@ -87,7 +88,10 @@ module BatchJob
     #   Regular Expression
     #
     # Note: Date is not supported, convert it to a UTC time
-    key :parameters,              Hash,    default: {}
+    key :arguments,               Array,    default: []
+
+    # Whether to store the results from this job
+    key :collect_output,         Boolean, default: false
 
     # Only give access through the Web UI to this group identifier
     key :group,                   String
@@ -126,10 +130,17 @@ module BatchJob
     # Store the last exception for this job
     key :exception,               Hash
 
+    # Store the Hash output from this job if collect_output is true,
+    # and the job returned actually returned a Hash, otherwise nil
+    # Not applicable to MultiRecord jobs
+    key :output,                  Hash
+
     # Store all job types in this collection
     set_collection_name 'batch_jobs'
 
-    validates_presence_of :state, :priority, :failure_count, :created_at, :percent_complete
+    validates_presence_of :state, :priority, :failure_count, :created_at, :percent_complete,
+      :klass, :method
+    # :repeatable, :destroy_on_completion, :collect_output, :arguments
     validates :percent_complete, inclusion: 0..100
 
     # State Machine events and transitions
@@ -304,49 +315,52 @@ module BatchJob
     #
     # Thread-safe, can be called by multiple threads at the same time
     def work(_=nil)
-      # Useful when #work is called directly without going through .next_job
-      if queued?
-        self.server = Server.name
-        start!
+      logger.tagged(self.id.to_s) do
+        raise 'Job must be started before calling #work' unless running?
+        begin
+          worker           = self.klass.constantize.new
+          worker.batch_job = self
+          # before_perform
+          call_method(worker, :before)
+
+          # perform
+          result = call_method(worker)
+          result = worker.send(self.method, *self.arguments)
+          if self.collect_output?
+            self.output = (result.is_a?(Hash) || result.is_a?(BSON::OrderedHash)) ? result : { result: result }
+          end
+
+          # after_perform
+          call_method(worker, :after)
+          complete!
+          1
+        rescue Exception => exc
+          worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
+          set_exception(exc)
+          0
+        end
       end
-      raise 'Job must be started before calling #work' unless running?
-      worker = nil
-      logger.benchmark_info("Called #{self.klass}##{self.method}", log_exception: :full, on_exception_level: :error) do
-        worker           = self.klass.constantize.new
-        worker.batch_job = self
-        args             = self.parameters['_params']
-        worker.send(self.method, *args)
-      end
-      complete!
-      true
-    rescue Exception => exc
-      worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-      set_exception(exc)
-      false
     end
 
-    # Returns the next job to work on in priority based order
-    # Returns nil if there are currently no queued jobs, or processing batch jobs
-    #   with records that require processing
-    #
-    # If a job is in queued state it will be started
-    def self.next_job
-      query = {
-        '$or' => [
-          { 'state' => 'queued' },
-          { 'state' => 'running', _type: "BatchJob::MultiRecord" }
-        ]
-      }
+    protected
 
-      if doc = find_and_modify(
-          query:  query,
-          sort:   [['priority', 'asc'], ['created_at', 'asc']],
-          update: { '$set' => { 'server' => Server.name, 'state' => 'running' } }
-        )
-        job = BatchJob::Single.load(doc)
-        # Also update in-memory state
-        job.start unless job.running?
-        job
+    # Calls a method on the worker, if it is defined for the worker
+    # Adds the event name to the method call if supplied
+    #
+    # Parameters
+    #   worker [BatchJob::Worker]
+    #     The worker instance on which to invoke the method
+    #
+    #   event [Symbol]
+    #     Any one of: :before, :after
+    #     Default: None, just call the method itself
+    #
+    def call_method(worker, event=nil)
+      the_method = event.nil? ? self.method : "#{event}_#{self.method}".to_sym
+      if worker.respond_to?(the_method)
+        logger.benchmark_info("#{worker.class.name}##{the_method}", metric: "Custom/#{the_method}/#{worker.class.name}#", log_exception: :full, on_exception_level: :error) do
+          worker.send(the_method, *self.arguments)
+        end
       end
     end
 

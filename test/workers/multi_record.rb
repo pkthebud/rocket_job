@@ -11,5 +11,9 @@ module Workers
       record.reverse
     end
 
+    def oh_no(record, header)
+      raise 'Oh no'
+    end
+
   end
 end

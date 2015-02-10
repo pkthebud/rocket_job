@@ -48,15 +48,15 @@ module BatchJob
     include SemanticLogger::Loggable
 
     # Unique Instance name for this process
-    # Default: host_name:PID
-    sync_cattr_accessor(:name) { "#{Socket.gethostname.split('.')[0]}:#{$$}" }
+    # Default: host_name
+    sync_cattr_accessor(:name) { "#{Socket.gethostname}" }
 
     # Returns [BatchJob::Server] the unique server instance for this process
     sync_cattr_reader(:server) do
       create_indexes
       server = where(name: name).first
       if server
-        server.perform_recovery
+        server.send(:perform_recovery)
         server.set(started_at: Time.now)
       else
         server = new(name: name, started_at: Time.now)
@@ -70,7 +70,16 @@ module BatchJob
 
     # Current state for the server
     # Default: :starting
-    sync_cattr_accessor(:state) { :starting }
+    #    sync_cattr_accessor(:state) { :starting }
+    # Signal handlers don't allow the use of mutex's
+    @@state = :starting
+    def self.state
+      @@state
+    end
+
+    def self.state=(state)
+      @@state = state
+    end
 
     # Unique Name of this server instance
     #   Defaults to the `hostname` but _must_ be overriden if mutiple Server instances
@@ -90,6 +99,7 @@ module BatchJob
     key :started_at,         Time
 
     # Name of the host on which the server is currently running
+    # Useful for when the name of the server was set explicitly
     key :host_name,          String
 
     # Process ID of the server process
@@ -119,6 +129,8 @@ module BatchJob
           server.send(:process_jobs, i)
         end
       end
+
+      logger.info "BatchJob Server started with #{server.max_threads} workers running"
 
       loop do
         sleep Config.instance.heartbeat_seconds
@@ -177,6 +189,33 @@ module BatchJob
       logger.fatal('Unhandled exception in job processing thread', exc)
     end
 
+    # Returns the next job to work on in priority based order
+    # Returns nil if there are currently no queued jobs, or processing batch jobs
+    #   with records that require processing
+    #
+    # If a job is in queued state it will be started
+    def self.next_job
+      query = {
+        '$or' => [
+          # Single Jobs
+          { 'state' => 'queued' },
+          # MultiRecord Jobs available for additional workers
+          { 'state' => 'running', 'parallel' => true }
+        ]
+      }
+
+      if doc = Single.find_and_modify(
+          query:  query,
+          sort:   [['priority', 'asc'], ['created_at', 'asc']],
+          update: { '$set' => { 'server' => self.name, 'state' => 'running' } }
+        )
+        job = Single.load(doc)
+        # Also update in-memory state and run call-backs
+        job.start unless job.running?
+        job
+      end
+    end
+
     # Register handlers for the various signals
     # Term:
     #   Perform clean shutdown
@@ -184,8 +223,13 @@ module BatchJob
     def self.register_signal_handlers
       begin
         Signal.trap "SIGTERM" do
-          Server.status = :shutdown
+          Server.state = :shutdown
           logger.warn "Shutdown signal (SIGTERM) received. Will shutdown as soon as active jobs/slices have completed."
+        end
+
+        Signal.trap "INT" do
+          Server.state = :shutdown
+          logger.warn "Shutdown signal (INT) received. Will shutdown as soon as active jobs/slices have completed."
         end
       rescue Exception
         logger.warn "SIGTERM handler not installed. Not able to shutdown gracefully"
