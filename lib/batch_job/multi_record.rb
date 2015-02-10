@@ -108,7 +108,7 @@ module BatchJob
     #     processed.
     #     Default: 0 => No time limit
     #
-    def work(options={})
+    def work(options={}, &block)
       raise 'Job must be started before calling #work' unless running?
       slice_number       = options.delete(:slice_number)
       slice_count        = options.delete(:slice_count)
@@ -136,7 +136,7 @@ module BatchJob
         processed_record_count = 0
         worker                 = self.klass.constantize.new
         worker.batch_job       = self
-        unless self.parallel
+        if block.nil? && self.parallel.blank?
           self.parallel = true
           # before_perform
           call_method(worker, :before)
@@ -148,7 +148,7 @@ module BatchJob
         # find_and_modify is already in a retry slice
         while message = input_collection.find_and_modify(selector)
           input_slice, header = parse_message(message)
-          process_slice(worker, input_slice, header)
+          process_slice(worker, input_slice, header, &block)
           processed_slice_count += 1
           processed_record_count += input_slice.size
           # If number of blocks to process has been exceeded
@@ -158,7 +158,7 @@ module BatchJob
           break if Server.shutting_down?
         end
         # Check if processing is complete
-        if self.record_count && (self.slices_queued == 0)
+        if block.nil? && self.record_count && (self.slices_queued == 0)
           # Check if another thread / worker already completed the job
           reload
           unless completed?
@@ -473,7 +473,7 @@ module BatchJob
     # Process a single message from Mongo
     # A message consists of a header and the slice of records to process
     # If the message is successfully processed it will be removed from the input collection
-    def process_slice(worker, input_slice, header)
+    def process_slice(worker, input_slice, header, &block)
       slice_id            = header['_id']
       record_number       = 0
       logger.tagged(slice_id) do
@@ -481,9 +481,13 @@ module BatchJob
           input_slice.collect do |record|
             record_number += 1
             # TODO Skip previously processed records if this is a retry
-            # perform
-            logger.benchmark_info("#{self.klass}##{self.method}", metric: "Custom/#{self.method}/#{self.klass.underscore}", log_exception: :full, on_exception_level: :error) do
-              worker.send(self.method, *self.arguments, record, header)
+            if block
+              block.call(*self.arguments, record, header)
+            else
+              # perform
+              logger.benchmark_info("#{self.klass}##{self.method}", metric: "Custom/#{self.method}/#{self.klass.underscore}", log_exception: :full, on_exception_level: :error) do
+                worker.send(self.method, *self.arguments, record, header)
+              end
             end
           end
         end

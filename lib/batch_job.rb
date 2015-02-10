@@ -24,22 +24,4 @@ module BatchJob
   end
 
   UTF8_ENCODING = Encoding.find("UTF-8").freeze
-
-  # Replace the MongoMapper default mongo connection for holding jobs
-  def self.set_mongo_connection(connection)
-    Single.connection(connection)
-  end
-
-  # Replace the MongoMapper default mongo connection for holding working data.
-  # For example, slices, records, etc.
-  def self.set_mongo_work_connection(connection)
-    BatchJob::MultiRecord.work_connection = connection
-  end
-
-  # Ensure that the necessary indexes exist for Batch Jobs
-  # If a non-default connection is being used, be sure to call `set_mongo_connection`
-  # and/or `set_mongo_work_connection` prior to calling `create_indexes`
-  def self.create_indexes
-    warn 'BatchJob.create_indexes is deprecated'
-  end
 end

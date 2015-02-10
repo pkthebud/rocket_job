@@ -119,9 +119,12 @@ module BatchJob
     #   server_name
     #     The same name must be passed in every time to ensure proper
     #     recovery on re-start
-    def self.run(server_name=nil)
+    def self.run(server_name=nil, daemon=true)
       self.name = server_name if server_name
       Thread.current.name = 'BatchJob.run'
+
+      # If not a daemon log info level messages to stdout
+      SemanticLogger.add_appender(STDOUT, :info,  &SemanticLogger::Appender::Base.colorized_formatter) unless daemon
 
       # Start worker threads
       threads = server.max_threads.times.collect do |i|
@@ -162,7 +165,7 @@ module BatchJob
       state == :shutdown
     end
 
-    private
+    protected
 
     # Check if their was a previous instance of this server running
     # If so, re-queue all of its jobs
@@ -176,7 +179,7 @@ module BatchJob
       Thread.current.name = "BatchJob::Server.process_jobs##{id}"
       logger.debug 'Started'
       loop do
-        if job = Single.next_job
+        if job = self.class.next_job
           job.work
         else
           # TODO Use exponential back-off algorithm

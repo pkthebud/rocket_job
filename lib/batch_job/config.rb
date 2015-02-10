@@ -33,5 +33,15 @@ module BatchJob
     #    'class_name' / group => 100
     key :limits, Hash
 
+    # Replace the MongoMapper default mongo connection for holding jobs
+    def self.mongo_connection=(connection)
+      Single.connection(connection)
+    end
+
+    # Replace the MongoMapper default mongo connection for holding working data.
+    # For example, slices, records, etc.
+    def self.mongo_work_connection=(connection)
+      BatchJob::MultiRecord.work_connection = connection
+    end
   end
 end

@@ -70,8 +70,7 @@ module BatchJob
     key :repeatable,              Boolean, default: true
 
     # When the job completes destroy it from both the database and the UI
-    # TODO
-    key :destroy_on_completion,   Boolean, default: false
+    key :destroy_on_complete,     Boolean, default: true
 
     # Any user supplied arguments for the method invocation
     # All keys must be UTF-8 strings. The values can be any valid BSON type:
@@ -199,9 +198,13 @@ module BatchJob
 
       event :complete do
         after do
-          self.percent_complete = 100
-          self.completed_at = Time.now
-          set(state: state, completed_at: completed_at)
+          if destroy_on_complete
+            destroy
+          else
+            self.percent_complete = 100
+            self.completed_at = Time.now
+            set(state: state, completed_at: completed_at)
+          end
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :completed
@@ -325,7 +328,6 @@ module BatchJob
 
           # perform
           result = call_method(worker)
-          result = worker.send(self.method, *self.arguments)
           if self.collect_output?
             self.output = (result.is_a?(Hash) || result.is_a?(BSON::OrderedHash)) ? result : { result: result }
           end
