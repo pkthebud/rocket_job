@@ -39,7 +39,7 @@ module BatchJob
     # when it is in :running state
     key :parallel,                Boolean, default: false
 
-    after_destroy :cleanup_records
+    after_destroy :cleanup!
 
     validates_presence_of :record_count, :compress_delimiter,
       :slice_size, :record_count, :failed_slices
@@ -161,7 +161,9 @@ module BatchJob
         if block.nil? && self.record_count && (self.slices_queued == 0)
           # Check if another thread / worker already completed the job
           reload
-          unless completed?
+          if aborted?
+            cleanup!
+          elsif running?
             # after_perform
             call_method(worker, :after)
             complete!
@@ -409,12 +411,12 @@ module BatchJob
 
     # Returns the Mongo Collection for the records queue name
     def input_collection
-      @input_collection ||= self.class.work_connection.db["#{self.class.collection_name}_input_#{id.to_s}"]
+      @input_collection ||= self.class.work_connection.db["batch_job.inputs.#{id.to_s}"]
     end
 
     # Returns the Mongo Collection for the records queue name
     def output_collection
-      @output_collection ||= self.class.work_connection.db["#{self.class.collection_name}_output_#{id.to_s}"]
+      @output_collection ||= self.class.work_connection.db["batch_job.outputs.#{id.to_s}"]
     end
 
     # Returns [Integer] percent of records completed so far
@@ -463,7 +465,7 @@ module BatchJob
     end
 
     # Drop the input and output collections
-    def cleanup_records
+    def cleanup!
       input_collection.drop
       output_collection.drop
     end
@@ -477,15 +479,15 @@ module BatchJob
       slice_id            = header['_id']
       record_number       = 0
       logger.tagged(slice_id) do
-        output_slice = logger.benchmark_info("#work Processed Block #{slice_id}") do
-          input_slice.collect do |record|
+        output_slice = logger.benchmark_debug('#work Processed Block', slice_id: slice_id) do
+          output_slice = input_slice.collect do |record|
             record_number += 1
             # TODO Skip previously processed records if this is a retry
             if block
               block.call(*self.arguments, record, header)
             else
               # perform
-              logger.benchmark_info("#{self.klass}##{self.method}", metric: "Custom/#{self.method}/#{self.klass.underscore}", log_exception: :full, on_exception_level: :error) do
+              logger.benchmark_debug("#{self.klass}##{self.method}", log_exception: :full, on_exception_level: :error) do
                 worker.send(self.method, *self.arguments, record, header)
               end
             end

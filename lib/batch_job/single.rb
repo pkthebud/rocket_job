@@ -135,7 +135,7 @@ module BatchJob
     key :output,                  Hash
 
     # Store all job types in this collection
-    set_collection_name 'batch_jobs'
+    set_collection_name 'batch_job.jobs'
 
     validates_presence_of :state, :priority, :failure_count, :created_at, :percent_complete,
       :klass, :method
@@ -360,7 +360,7 @@ module BatchJob
     def call_method(worker, event=nil)
       the_method = event.nil? ? self.method : "#{event}_#{self.method}".to_sym
       if worker.respond_to?(the_method)
-        logger.benchmark_info("#{worker.class.name}##{the_method}", metric: "Custom/#{the_method}/#{worker.class.name}#", log_exception: :full, on_exception_level: :error) do
+        logger.benchmark_debug("#{worker.class.name}##{the_method}", log_exception: :full, on_exception_level: :error) do
           worker.send(the_method, *self.arguments)
         end
       end
