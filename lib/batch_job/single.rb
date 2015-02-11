@@ -240,7 +240,7 @@ module BatchJob
       event :abort do
         after do
           self.completed_at = Time.now
-          set(state: state)
+          set(state: state, completed_at: completed_at)
           UserMailer.batch_job_aborted(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :aborted

@@ -22,6 +22,9 @@ module BatchJob
   module Writer
     autoload :Zip,                 'batch_job/writer/zip'
   end
+  module Jobs
+    autoload :PerformanceJob,      'batch_job/jobs/performance_job'
+  end
 
   UTF8_ENCODING = Encoding.find("UTF-8").freeze
 end
