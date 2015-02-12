@@ -10,7 +10,7 @@ module BatchJob
   module Worker
     def self.included(base)
       base.extend(ClassMethods)
-      base.include(SemanticLogger::Loggable)
+      base.send(:include, SemanticLogger::Loggable)
       base.send(:attr_accessor, :batch_job)
     end
 
