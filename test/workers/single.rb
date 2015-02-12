@@ -17,5 +17,15 @@ module Workers
       @@result = a + b
     end
 
+    # Test silencing noisy logging
+    def noisy_logger
+      logger.info 'some very noisy logging'
+    end
+
+    # Test increasing log level for debugging purposes
+    def debug_logging
+      logger.trace 'enable tracing level for just the job instance'
+    end
+
   end
 end

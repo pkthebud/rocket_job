@@ -9,7 +9,7 @@ module BatchJob
       # Fake it out by re-winding a stream and replace the line after every read
       # Hard code the row separator so that it does not try to auto-detect it
       def initialize(encoding=BatchJob::UTF8_ENCODING)
-        @io = StringIO.new(''.force_encoding(encoding))
+        @io  = StringIO.new(''.force_encoding(encoding))
         @csv = CSV.new(@io, row_sep: '')
       end
 
@@ -29,7 +29,9 @@ module BatchJob
       def to_csv(array)
         @io.rewind
         @io.truncate(0)
-        (@csv << array).string
+        @csv << array
+        @io.rewind
+        @io.string
       end
     end
 

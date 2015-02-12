@@ -90,7 +90,12 @@ module BatchJob
     key :arguments,               Array,    default: []
 
     # Whether to store the results from this job
-    key :collect_output,         Boolean, default: false
+    key :collect_output,          Boolean, default: false
+
+    # Raise or lower the log level when calling the job
+    # Can be used to reduce log noise, especially during high volume calls
+    # For debugging a single job can be logged at a low level such as :trace
+    key :log_level,               Symbol
 
     # Only give access through the Web UI to this group identifier
     key :group,                   String
@@ -137,10 +142,11 @@ module BatchJob
     # Store all job types in this collection
     set_collection_name 'batch_job.jobs'
 
-    validates_presence_of :state, :priority, :failure_count, :created_at, :percent_complete,
+    validates_presence_of :state, :failure_count, :created_at, :percent_complete,
       :klass, :method
-    # :repeatable, :destroy_on_completion, :collect_output, :arguments
+    # :repeatable, :destroy_on_complete, :collect_output, :arguments
     validates :percent_complete, inclusion: 0..100
+    validates :priority, inclusion: 1..100
 
     # State Machine events and transitions
     #
@@ -360,7 +366,13 @@ module BatchJob
     def call_method(worker, event=nil)
       the_method = event.nil? ? self.method : "#{event}_#{self.method}".to_sym
       if worker.respond_to?(the_method)
-        logger.benchmark_debug("#{worker.class.name}##{the_method}", log_exception: :full, on_exception_level: :error) do
+        logger.benchmark_info(
+          "#{worker.class.name}##{the_method}",
+          metric:             "batch_job/#{worker.class.name.underscore}/#{the_method}",
+          log_exception:      :full,
+          on_exception_level: :error,
+          silence:            self.log_level
+        ) do
           worker.send(the_method, *self.arguments)
         end
       end

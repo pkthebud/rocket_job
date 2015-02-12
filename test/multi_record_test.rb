@@ -15,10 +15,11 @@ class MultiRecordJobTest < Minitest::Test
         'as necessary'
       ]
       @job = BatchJob::MultiRecord.create(
-        description:     @description,
-        collect_output:  true,
-        repeatable:      true,
-        klass:           'Workers::MultiRecord',
+        description:         @description,
+        collect_output:      true,
+        repeatable:          true,
+        klass:               'Workers::MultiRecord',
+        destroy_on_complete: false
       )
     end
 
@@ -84,8 +85,8 @@ class MultiRecordJobTest < Minitest::Test
           assert_equal @lines[count], slice.first
           count += 1
         end
-        assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
+        assert_equal true, @job.completed?
         assert_equal @lines.size, count
       end
 
@@ -337,8 +338,8 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
+        assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -351,8 +352,8 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
+        assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -366,8 +367,8 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal true, @job.completed?
         assert_equal 0, @job.failed_slices
+        assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect

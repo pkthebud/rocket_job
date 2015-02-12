@@ -479,17 +479,21 @@ module BatchJob
       slice_id            = header['_id']
       record_number       = 0
       logger.tagged(slice_id) do
-        output_slice = logger.benchmark_debug('#work Processed Block', slice_id: slice_id) do
-          output_slice = input_slice.collect do |record|
+        output_slice = logger.benchmark_info(
+          "#{worker.class.name}##{self.method}, slice:#{slice_id}",
+          metric:             "batch_job/#{worker.class.name.underscore}/#{self.method}",
+          log_exception:      :full,
+          on_exception_level: :error,
+          silence:            self.log_level
+        ) do
+          input_slice.collect do |record|
             record_number += 1
             # TODO Skip previously processed records if this is a retry
             if block
               block.call(*self.arguments, record, header)
             else
               # perform
-              logger.benchmark_debug("#{self.klass}##{self.method}", log_exception: :full, on_exception_level: :error) do
-                worker.send(self.method, *self.arguments, record, header)
-              end
+              worker.send(self.method, *self.arguments, record, header)
             end
           end
         end

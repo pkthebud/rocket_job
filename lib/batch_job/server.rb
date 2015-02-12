@@ -64,21 +64,7 @@ module BatchJob
         server.save!
       end
       register_signal_handlers
-      self.state = :running
       server
-    end
-
-    # Current state for the server
-    # Default: :starting
-    #    sync_cattr_accessor(:state) { :starting }
-    # Signal handlers don't allow the use of mutex's
-    @@state = :starting
-    def self.state
-      @@state
-    end
-
-    def self.state=(state)
-      @@state = state
     end
 
     # Unique Name of this server instance
@@ -89,7 +75,11 @@ module BatchJob
     key :name,               String
 
     # Current state
-    key :state,              Symbol, default: :available
+    #
+    # States
+    #   :inactive -> :running -> :inactive
+    #                         -> :paused
+    key :state,              Symbol, default: :inactive
 
     # The maximum number of worker threads
     #   If set, it will override the default value in BatchJob::Config
@@ -108,18 +98,13 @@ module BatchJob
     # The heartbeat information for this server
     one :heartbeat,          class_name: 'BatchJob::Heartbeat'
 
-    # State Machine events and transitions
-    #
-    #   :available -> :paused      -> :available  ( manual )
-    #              -> :stopped     -> :available  ( on restart )
-    #
-
     # Run the server process
     # Parameters
     #   server_name
     #     The same name must be passed in every time to ensure proper
     #     recovery on re-start
-    def self.run(server_name=nil, daemon=true)
+    def self.run(server_name=nil, daemon=false)
+      @@running = true
       self.name = server_name if server_name
       Thread.current.name = 'BatchJob.run'
 
@@ -151,6 +136,8 @@ module BatchJob
       logger.debug 'Shutdown'
     rescue Exception => exc
       logger.error('BatchJob::Server is stopping due to an exception', exc)
+    ensure
+      @@running = false
     end
 
     # Create indexes
@@ -162,10 +149,18 @@ module BatchJob
 
     # Is the server shutting down?
     def self.shutting_down?
-      state == :shutdown
+      @@shutdown == true
+    end
+
+    # Is the server running?
+    def self.running?
+      @@running == true
     end
 
     protected
+
+    @@shutdown = false
+    @@running  = false
 
     # Check if their was a previous instance of this server running
     # If so, re-queue all of its jobs
@@ -174,7 +169,7 @@ module BatchJob
       #Single.where()
     end
 
-    # Keep process jobs until the shutdown semaphore is set
+    # Keep processing jobs until .shutting_down?
     def process_jobs(id)
       Thread.current.name = "BatchJob::Server.process_jobs##{id}"
       logger.debug 'Started'
@@ -226,12 +221,12 @@ module BatchJob
     def self.register_signal_handlers
       begin
         Signal.trap "SIGTERM" do
-          Server.state = :shutdown
+          @@shutdown = true
           logger.warn "Shutdown signal (SIGTERM) received. Will shutdown as soon as active jobs/slices have completed."
         end
 
         Signal.trap "INT" do
-          Server.state = :shutdown
+          @@shutdown = true
           logger.warn "Shutdown signal (INT) received. Will shutdown as soon as active jobs/slices have completed."
         end
       rescue Exception

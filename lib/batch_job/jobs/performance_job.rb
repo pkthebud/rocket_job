@@ -80,13 +80,17 @@ module BatchJob
 
       # Parse supplied line with custom CSV and then just convert back to a CSV string
       def custom_csv(line, header)
-        csv_parser = BatchJob::Utility::CSVRow.new
         csv_parser.to_csv(csv_parser.parse(line))
       end
 
       # Parse supplied line with Regular CSV and then just convert back to a CSV string
       def ruby_csv(line, header)
         return CSV.parse_line(line).to_csv(row_sep: '')
+      end
+
+      # Re-use CSV Parser between calls
+      def csv_parser
+        @csv_parser ||= BatchJob::Utility::CSVRow.new
       end
     end
 
