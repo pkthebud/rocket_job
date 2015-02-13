@@ -114,7 +114,7 @@ module BatchJob
       # Start worker threads
       threads = server.max_threads.times.collect do |i|
         Thread.new(server, i) do |server, i|
-          server.send(:process_jobs, i)
+          server.send(:worker, i)
         end
       end
 
@@ -170,8 +170,8 @@ module BatchJob
     end
 
     # Keep processing jobs until .shutting_down?
-    def process_jobs(id)
-      Thread.current.name = "BatchJob::Server.process_jobs##{id}"
+    def worker(id)
+      Thread.current.name = "BatchJob Worker #{id}"
       logger.debug 'Started'
       loop do
         if job = self.class.next_job

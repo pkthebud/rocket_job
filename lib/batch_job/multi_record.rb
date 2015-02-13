@@ -34,7 +34,7 @@ module BatchJob
     key :record_count,            Integer, default: 0
 
     # Number of slices that failed to process due to an un-handled exception
-    key :failed_slices,           Integer, default: 0
+    key :slices_failed,           Integer, default: 0
 
     # Used internally to allow other workers to also work on this job
     # when it is in :running state
@@ -43,7 +43,7 @@ module BatchJob
     after_destroy :cleanup!
 
     validates_presence_of :record_count, :compress_delimiter,
-      :slice_size, :record_count, :failed_slices
+      :slice_size, :record_count, :slices_failed
     # :compress, :encrypt, :parallel
 
     # Use a separate Mongo connection for the Records and Results
@@ -167,7 +167,7 @@ module BatchJob
           elsif running?
             # after_perform
             call_method(worker, :after)
-            complete!
+              complete!
           end
         end
         processed_record_count
@@ -195,10 +195,10 @@ module BatchJob
 
       result = input_collection.update(selector, {'$unset' => { 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
       count = result['nModified']
-      decrement(failed_slices: count)
-      self.failed_slices -= count
+      decrement(slices_failed: count)
+      self.slices_failed -= count
       # In case this job instance does not have the latest count on the server
-      self.failed_slices = 0 if failed_slices < 0
+      self.slices_failed = 0 if slices_failed < 0
       count
     end
 
@@ -454,11 +454,12 @@ module BatchJob
       case
       when running? || paused?
         processed = slices_processed
-        h[:slices_queued]    = slices_queued
-        h[:slices_processed] = processed
-        h[:total_records]    = record_count
-        h[:records_per_hour] = ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round
         h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * slice_size) / record_count) * 100).to_i
+        h[:records_per_hour] = ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round
+        h[:slices_failed]    = slices_failed
+        h[:slices_processed] = processed
+        h[:slices_queued]    = slices_queued
+        h[:total_records]    = record_count
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
@@ -484,8 +485,10 @@ module BatchJob
       slice_id            = header['_id']
       record_number       = 0
       logger.tagged(slice_id) do
+        slice = "#{worker.class.name}##{self.method}, slice:#{slice_id}"
+        logger.info "Start #{slice}"
         output_slice = logger.benchmark_info(
-          "#{worker.class.name}##{self.method}, slice:#{slice_id}",
+          "Completed #{slice}",
           metric:             "batch_job/#{worker.class.name.underscore}/#{self.method}",
           log_exception:      :full,
           on_exception_level: :error,
@@ -562,9 +565,9 @@ module BatchJob
 
     # Set exception information for a specific slice
     def set_exception(header, exc, record_number)
-      # Increment the failed_slices by 1
-      increment(failed_slices: 1)
-      self.failed_slices += 1
+      # Increment the slices_failed by 1
+      increment(slices_failed: 1)
+      self.slices_failed += 1
 
       # Set failure information and increment retry count
       input_collection.update(

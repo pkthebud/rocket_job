@@ -366,8 +366,10 @@ module BatchJob
     def call_method(worker, event=nil)
       the_method = event.nil? ? self.method : "#{event}_#{self.method}".to_sym
       if worker.respond_to?(the_method)
+        method_name = "#{worker.class.name}##{the_method}"
+        logger.info "Start #{method_name}"
         logger.benchmark_info(
-          "#{worker.class.name}##{the_method}",
+          "Completed #{method_name}",
           metric:             "batch_job/#{worker.class.name.underscore}/#{the_method}",
           log_exception:      :full,
           on_exception_level: :error,

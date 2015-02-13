@@ -85,7 +85,7 @@ class MultiRecordJobTest < Minitest::Test
           assert_equal @lines[count], slice.first
           count += 1
         end
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         assert_equal @lines.size, count
       end
@@ -100,7 +100,7 @@ class MultiRecordJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work
-        assert_equal @lines.size, @job.failed_slices
+        assert_equal @lines.size, @job.slices_failed
         assert_equal 0, @job.slices_processed
         # Must stay in the queue
         assert_equal @lines.size, @job.slices_queued
@@ -108,14 +108,14 @@ class MultiRecordJobTest < Minitest::Test
 
         # Should not process failed jobs
         @job.work
-        assert_equal @lines.size, @job.failed_slices
+        assert_equal @lines.size, @job.slices_failed
         assert_equal 0, @job.slices_processed
         # Must stay in the queue
         assert_equal @lines.size, @job.slices_queued
         assert_equal false, @job.completed?
 
         # Make records available for processing again
-        @job.retry_failed_slices
+        @job.retry_slices_failed
 
         # Re-process the failed jobs
         @job.method = :perform
@@ -123,7 +123,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.slices_processed
         # Must stay in the queue
         assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
       end
     end
@@ -312,7 +312,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.start!
         @job.work
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
@@ -325,7 +325,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.start!
         @job.work
         assert_equal true, @job.completed?
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -338,7 +338,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
@@ -352,7 +352,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
@@ -367,7 +367,7 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work
-        assert_equal 0, @job.failed_slices
+        assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
