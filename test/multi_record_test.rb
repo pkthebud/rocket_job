@@ -115,7 +115,7 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal false, @job.completed?
 
         # Make records available for processing again
-        @job.retry_slices_failed
+        @job.requeue
 
         # Re-process the failed jobs
         @job.method = :perform

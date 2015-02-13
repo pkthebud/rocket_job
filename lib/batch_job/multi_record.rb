@@ -174,12 +174,13 @@ module BatchJob
       end
     end
 
-    # Make all failed slices for this job available for processing again
+    # Requeue this jobs failed slices
+    # 
     # Parameters:
     #   slice_numbers [Array<Integer>]
     #     Numbers of the slices to retry
     #     Default: Retry all slices for this job
-    def retry_failed_slices(slice_numbers=nil)
+    def requeue(slice_numbers=nil)
       selector = {'failed' => { '$exists' => true }}
       # Apply slice_number override if applicable
       if slice_numbers
