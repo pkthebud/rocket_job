@@ -205,7 +205,7 @@ module BatchJob
       if doc = Single.find_and_modify(
           query:  query,
           sort:   [['priority', 'asc'], ['created_at', 'asc']],
-          update: { '$set' => { 'server' => self.name, 'state' => 'running', 'started_at' => Time.now } }
+          update: { '$set' => { 'server' => self.name, 'state' => 'running' } }
         )
         job = Single.load(doc)
         # Also update in-memory state and run call-backs
