@@ -117,7 +117,7 @@ module BatchJob
 
       selector = {
         query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-        update: { '$set' => { server: Server.name }, '$currentDate' => { 'started_at' => true }},
+        update: { '$set' => { server: Server.name, 'started_at' => Time.now } },
         sort:   '_id'
       }
 
