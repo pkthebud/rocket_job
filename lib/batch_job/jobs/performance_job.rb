@@ -88,9 +88,15 @@ module BatchJob
         return CSV.parse_line(line).to_csv(row_sep: '')
       end
 
-      # Re-use CSV Parser between calls
-      def csv_parser
-        @csv_parser ||= BatchJob::Utility::CSVRow.new
+      if defined?(JRuby)
+        # Due a JRuby optimization issue we cannot re-use the same instance
+        def csv_parser
+          BatchJob::Utility::CSVRow.new
+        end
+      else
+        def csv_parser
+          @csv_parser ||= BatchJob::Utility::CSVRow.new
+        end
       end
     end
 
