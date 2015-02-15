@@ -194,59 +194,62 @@ module BatchJob
       state :aborted
 
       event :start do
-        after do
+        before do
           self.started_at = Time.now
-          set(state: state, started_at: started_at)
+        end
+        after do
           UserMailer.batch_job_started(self).deliver if email_addresses.present?
         end
         transitions from: :queued, to: :running
       end
 
       event :complete do
+        before do
+          self.percent_complete = 100
+          self.completed_at = Time.now
+        end
         after do
-          if destroy_on_complete
-            destroy
-          else
-            self.percent_complete = 100
-            self.completed_at = Time.now
-            set(state: state, completed_at: completed_at)
-          end
+          destroy if destroy_on_complete
           UserMailer.batch_job_completed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :completed
       end
 
       event :fail do
-        after do
+        before do
           self.completed_at = Time.now
-          set(state: state, completed_at: completed_at)
+        end
+        after do
           UserMailer.batch_job_failed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :failed
       end
 
       event :pause do
-        after do
+        before do
           self.completed_at = Time.now
-          set(state: state, completed_at: completed_at)
+        end
+        after do
           UserMailer.batch_job_paused(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :paused
       end
 
       event :resume do
-        after do
+        before do
           self.completed_at = nil
-          set(state: state, completed_at: completed_at)
+        end
+        after do
           UserMailer.batch_job_resumed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :paused
       end
 
       event :abort do
-        after do
+        before do
           self.completed_at = Time.now
-          set(state: state, completed_at: completed_at)
+        end
+        after do
           UserMailer.batch_job_aborted(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :aborted
@@ -324,29 +327,29 @@ module BatchJob
     #
     # Thread-safe, can be called by multiple threads at the same time
     def work(server)
-        raise 'Job must be started before calling #work' unless running?
-        begin
-          worker           = self.klass.constantize.new
-          worker.batch_job = self
-          # before_perform
-          call_method(worker, :before)
+      raise 'Job must be started before calling #work' unless running?
+      begin
+        worker           = self.klass.constantize.new
+        worker.batch_job = self
+        # before_perform
+        call_method(worker, :before)
 
-          # perform
-          result = call_method(worker)
-          if self.collect_output?
-            self.output = (result.is_a?(Hash) || result.is_a?(BSON::OrderedHash)) ? result : { result: result }
-          end
-
-          # after_perform
-          call_method(worker, :after)
-          complete!
-          1
-        rescue Exception => exc
-          worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-        set_exception(server.name, exc)
-          0
+        # perform
+        result = call_method(worker)
+        if self.collect_output?
+          self.output = (result.is_a?(Hash) || result.is_a?(BSON::OrderedHash)) ? result : { result: result }
         end
+
+        # after_perform
+        call_method(worker, :after)
+        complete!
+        1
+      rescue Exception => exc
+        worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
+        set_exception(server.name, exc)
+        0
       end
+    end
 
     protected
 

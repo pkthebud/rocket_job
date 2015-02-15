@@ -134,7 +134,7 @@ module BatchJob
         # Allow new jobs with a higher priority to interrupt this job worker
         break if server.re_check_seconds > 0 && ((Time.now - start_time) >= server.re_check_seconds)
       end
-      check_completion
+      check_completion(worker)
       processed_record_count
     end
 
@@ -472,7 +472,7 @@ module BatchJob
     protected
 
     # Checks for completion and runs after_perform if defined
-    def check_completion
+    def check_completion(worker)
       return unless record_count && (input_collection.count == 0)
       # Run after_perform, only if it has not already been run by another worker
       # and prevent other workers from also completing it

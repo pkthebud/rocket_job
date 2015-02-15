@@ -44,6 +44,7 @@ module BatchJob
   #
   class Server
     include MongoMapper::Document
+    include AASM
     include SyncAttr
     include SemanticLogger::Loggable
 

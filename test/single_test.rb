@@ -5,6 +5,8 @@ require_relative 'workers/single'
 class SingleTest < Minitest::Test
   context BatchJob::Single do
     setup do
+      @server = BatchJob::Server.new
+      @server.started
       @description = 'Hello World'
       @arguments   = [ 1 ]
       @job = BatchJob::Single.new(
@@ -16,7 +18,7 @@ class SingleTest < Minitest::Test
     end
 
     teardown do
-      @job.destroy unless @job.new_record?
+      @job.destroy if @job && !@job.new_record?
     end
 
     context '.config' do
@@ -62,7 +64,7 @@ class SingleTest < Minitest::Test
     context '#work' do
       should 'call default perform method' do
         @job.start!
-        assert_equal 1, @job.work
+        assert_equal 1, @job.work(@server)
         assert_equal true, @job.completed?
         assert_equal 2,    Workers::Single.result
       end
@@ -71,7 +73,7 @@ class SingleTest < Minitest::Test
         @job.method = :sum
         @job.arguments = [ 23, 45 ]
         @job.start!
-        assert_equal 1, @job.work
+        assert_equal 1, @job.work(@server)
         assert_equal true, @job.completed?
         assert_equal 68,    Workers::Single.result
       end
@@ -79,7 +81,7 @@ class SingleTest < Minitest::Test
       should 'destroy on complete' do
         @job.destroy_on_complete = true
         @job.start!
-        assert_equal 1, @job.work
+        assert_equal 1, @job.work(@server)
         assert_equal nil, BatchJob::Single.find_by_id(@job.id)
       end
 
@@ -91,7 +93,7 @@ class SingleTest < Minitest::Test
         @job.start!
         logged = false
         Workers::Single.logger.stub(:log_internal, -> { logged = true }) do
-          assert_equal 1, @job.work
+          assert_equal 1, @job.work(@server)
         end
         assert_equal false, logged
       end
@@ -106,7 +108,7 @@ class SingleTest < Minitest::Test
         # Raise global log level to :info
         SemanticLogger.stub(:default_level_index, 3) do
           Workers::Single.logger.stub(:log_internal, -> { logged = true }) do
-            assert_equal 1, @job.work
+            assert_equal 1, @job.work(@server)
           end
         end
         assert_equal false, logged
