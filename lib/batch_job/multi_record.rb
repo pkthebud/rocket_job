@@ -33,17 +33,15 @@ module BatchJob
     # Number of records in this job
     key :record_count,            Integer, default: 0
 
-    # Number of slices that failed to process due to an un-handled exception
-    key :slices_failed,           Integer, default: 0
-
-    # Used internally to allow other workers to also work on this job
-    # when it is in :running state
-    key :parallel,                Boolean, default: false
+    # Breaks the :running state up into multiple sub-states:
+    #   :running -> :before -> :processing -> :after -> :complete
+    # TODO Validate values and can only be set when :state == :running
+    key :sub_state,               Boolean, default: :before
 
     after_destroy :cleanup!
 
     validates_presence_of :record_count, :compress_delimiter,
-      :slice_size, :record_count, :slices_failed
+      :slice_size, :record_count
     # :compress, :encrypt, :parallel
 
     # Use a separate Mongo connection for the Records and Results
@@ -109,73 +107,58 @@ module BatchJob
     #     processed.
     #     Default: 0 => No time limit
     #
-    def work(options={}, &block)
+    def work(server, &block)
       raise 'Job must be started before calling #work' unless running?
-      slice_number       = options.delete(:slice_number)
-      slice_count        = options.delete(:slice_count)
-      processing_seconds = options.delete(:processing_seconds) || 0
-      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#work option: #{option.inspect}") }
+      start_time = Time.now
+      processed_record_count = 0
+      worker                 = self.klass.constantize.new
+      worker.batch_job       = self
+      # If this is the first worker to pickup this job
+      if sub_state == :before
+        # before_perform
+        call_method(worker, :before)
+        self.sub_state = :processing
+        save!
+      end
 
       selector = {
         query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-        update: { '$set' => { server: Server.name, 'started_at' => Time.now } },
+        update: { '$set' => { server: server.name, 'started_at' => Time.now } },
         sort:   '_id'
       }
-
-      logger.tagged(self.id.to_s) do
-        # Apply slice_number override if applicable
-        if slice_number
-          if slice_number.is_a?(Integer)
-            selector[:query]['_id'] = slice_number
-          else
-            selector[:query]['_id'] = { '$in' => slice_number }
-          end
-        end
-
-        start_time = Time.now if processing_seconds > 0
-        processed_slice_count  = 0
-        processed_record_count = 0
-        worker                 = self.klass.constantize.new
-        worker.batch_job       = self
-        if block.nil? && self.parallel.blank?
-          self.parallel = true
-          # before_perform
-          call_method(worker, :before)
-          # Save `parallel` to allow other workers to start processing this job
-          # and to save any other changes made in the before_perform
-          save!
-        end
-
-        # find_and_modify is already in a retry slice
-        while message = input_collection.find_and_modify(selector)
-          input_slice, header = parse_message(message)
-          process_slice(worker, input_slice, header, &block)
-          processed_slice_count += 1
-          processed_record_count += input_slice.size
-          # If number of blocks to process has been exceeded
-          break if slice_count && (processed_slice_count >= slice_count)
-          # If processing time is exceeded
-          break if processing_seconds > 0 && ((Time.now - start_time) >= processing_seconds)
-          break if Server.shutting_down?
-        end
-        # Check if processing is complete
-        if block.nil? && self.record_count && (self.slices_queued == 0)
-          # Check if another thread / worker already completed the job
-          reload
-          if aborted?
-            cleanup!
-          elsif running?
-            # after_perform
-            call_method(worker, :after)
-              complete!
-          end
-        end
-        processed_record_count
+      while message = input_collection.find_and_modify(selector)
+        input_slice, header = parse_message(message)
+        process_slice(worker, input_slice, header, &block)
+        processed_record_count += input_slice.size
+        break if !server.running?
+        # Allow new jobs with a higher priority to interrupt this job worker
+        break if server.re_check_seconds > 0 && ((Time.now - start_time) >= server.re_check_seconds)
       end
+      check_completion
+      processed_record_count
+    end
+
+    # Once a job is running and in sub_state :before the worker can pre-process
+    # specific portions of the entire job and stick those results in the parameters
+    # for other workers to use in their processing.
+    # For example a CSV file where the first line in the first slice contains
+    # the header columns
+    def before_work(slice_id, &block)
+      raise 'Job must be running and in before sub_state when calling #before_work' if running? && (sub_state == :before)
+      processed_record_count = 0
+      worker                 = self.klass.constantize.new
+      worker.batch_job       = self
+      if message = input_collection.find_one('_id' => slice_id)
+        input_slice, header = parse_message(message)
+        process_slice(worker, input_slice, header, &block)
+        processed_record_count = input_slice.size
+      end
+      processed_record_count
     end
 
     # Requeue this jobs failed slices
-    # 
+    # Returns [Integer] the number of slices re-queued for processing
+    #
     # Parameters:
     #   slice_numbers [Array<Integer>]
     #     Numbers of the slices to retry
@@ -194,13 +177,8 @@ module BatchJob
         end
       end
 
-      result = input_collection.update(selector, {'$unset' => { 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
-      count = result['nModified']
-      decrement(slices_failed: count)
-      self.slices_failed -= count
-      # In case this job instance does not have the latest count on the server
-      self.slices_failed = 0 if slices_failed < 0
-      count
+      result = input_collection.update(selector, {'$unset' => { 'server' => true, 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
+      result #['nModified'] || 0
     end
 
     # Add a slice of records for processing
@@ -439,9 +417,22 @@ module BatchJob
       active? && (record_count.to_i > 0) && (input_collection.count == 0) && (output_collection.count == record_count)
     end
 
-    # Returns [Integer] the number of slices queued for processing
+    # Returns [Integer] the number of slices currently being processed
+    # failed slices
+    def slices_active
+      input_collection.count(query: {'failed' => { '$exists' => false }, 'server' => { '$exists' => true } })
+    end
+
+    # Returns [Integer] the number of slices that have failed so far for this job
+    # Call #requeue to re-queue the failed jobs for re-processing
+    def slices_failed
+      input_collection.count(query: {'failed' => { '$exists' => true } })
+    end
+
+    # Returns [Integer] the number of slices queued for processing excluding
+    # failed slices
     def slices_queued
-      input_collection.count
+      input_collection.count(query: { 'failed' => { '$exists' => false }, 'server' => { '$exists' => false } })
     end
 
     # Returns [Integer] the number of slices already processed
@@ -457,6 +448,7 @@ module BatchJob
         processed = slices_processed
         h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * slice_size) / record_count) * 100).to_i
         h[:records_per_hour] = ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round
+        h[:slices_active]    = slices_active
         h[:slices_failed]    = slices_failed
         h[:slices_processed] = processed
         h[:slices_queued]    = slices_queued
@@ -478,6 +470,20 @@ module BatchJob
     end
 
     protected
+
+    # Checks for completion and runs after_perform if defined
+    def check_completion
+      return unless record_count && (input_collection.count == 0)
+      # Run after_perform, only if it has not already been run by another worker
+      # and prevent other workers from also completing it
+      if result = collection.update({ '_id' => id, 'state' => 'running' }, { '$set' => { 'state' => 'completed' }})
+        if result['nModified'] > 0
+          # after_perform
+          call_method(worker, :after)
+          complete!
+        end
+      end
+    end
 
     # Process a single message from Mongo
     # A message consists of a header and the slice of records to process
@@ -566,10 +572,6 @@ module BatchJob
 
     # Set exception information for a specific slice
     def set_exception(header, exc, record_number)
-      # Increment the slices_failed by 1
-      increment(slices_failed: 1)
-      self.slices_failed += 1
-
       # Set failure information and increment retry count
       input_collection.update(
         { '_id' => header['_id'] },
@@ -580,7 +582,7 @@ module BatchJob
               'class'         => exc.class.to_s,
               'message'       => exc.message,
               'backtrace'     => exc.backtrace || [],
-              'server'        => Server.name,
+              'server'        => header['server'],
               'record_number' => record_number
             },
             'failure_count' => header['failure_count'].to_i + 1,

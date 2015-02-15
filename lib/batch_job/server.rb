@@ -47,89 +47,107 @@ module BatchJob
     include SyncAttr
     include SemanticLogger::Loggable
 
-    # Unique Instance name for this process
-    # Default: host_name
-    sync_cattr_accessor(:name) { "#{Socket.gethostname}" }
-
-    # Returns [BatchJob::Server] the unique server instance for this process
-    sync_cattr_reader(:server) do
-      create_indexes
-      server = where(name: name).first
-      if server
-        server.send(:perform_recovery)
-        server.set(started_at: Time.now)
-      else
-        server = new(name: name, started_at: Time.now)
-        server.build_heartbeat
-        server.save!
-      end
-      register_signal_handlers
-      server
-    end
-
     # Unique Name of this server instance
     #   Defaults to the `hostname` but _must_ be overriden if mutiple Server instances
     #   are started on the same host
     # The unique name is used on re-start to re-queue any jobs that were being processed
     # at the time the server or host unexpectedly terminated, if any
-    key :name,               String
-
-    # Current state
-    #
-    # States
-    #   :inactive -> :running -> :inactive
-    #                         -> :paused
-    key :state,              Symbol, default: :inactive
+    key :name,               String, default: -> { "#{Socket.gethostname}:$$" }
 
     # The maximum number of worker threads
     #   If set, it will override the default value in BatchJob::Config
-    key :max_threads,        Integer, default: 3
+    key :max_threads,        Integer, default: -> { Config.instance.max_worker_threads }
 
     # When this server process was started
     key :started_at,         Time
 
-    # Name of the host on which the server is currently running
-    # Useful for when the name of the server was set explicitly
-    key :host_name,          String
-
-    # Process ID of the server process
-    key :pid,                Integer
-
     # The heartbeat information for this server
     one :heartbeat,          class_name: 'BatchJob::Heartbeat'
 
-    # Run the server process
-    # Parameters
-    #   server_name
-    #     The same name must be passed in every time to ensure proper
-    #     recovery on re-start
-    def self.run(server_name=nil, daemon=false)
-      @@running = true
-      self.name = server_name if server_name
-      Thread.current.name = 'BatchJob.run'
+    # Number of seconds job workers will be requested to return after so that
+    # jobs with a higher priority can interrupt current jobs
+    #
+    # Note:
+    #   Not all job types support stopping in the middle
+    key :re_check_seconds,   Integer, default: 900
 
-      # If not a daemon log info level messages to stdout
-      SemanticLogger.add_appender(STDOUT, :info,  &SemanticLogger::Appender::Base.colorized_formatter) unless daemon
+    # Current state
+    #   Internal use only. Do not set this field directly
+    key :state,              Symbol, default: :starting
 
-      # Start worker threads
-      threads = server.max_threads.times.collect do |i|
-        Thread.new(server, i) do |server, i|
-          server.send(:worker, i)
+    # Current state
+    #   Internal use only. Do not set this field directly
+    key :daemon,             Boolean, default: false
+
+    validates_presence_of :state, :name, :max_threads
+
+    # States
+    #   :starting -> :running -> :paused
+    #                         -> :stopping
+    aasm column: :state do
+      state :starting, initial: true
+      state :running
+      state :paused
+      state :stopping
+
+      event :started do
+        transitions from: :starting, to: :running
+        before do
+          self.started_at = Time.now
         end
       end
+      event :pause do
+        transitions from: :running, to: :paused
+      end
+      event :stop do
+        transitions from: :running, to: :stopping
+        transitions from: :paused,  to: :stopping
+      end
+    end
+
+    attr_reader :threads
+
+    def threads
+      @threads ||=[]
+    end
+
+    # Run the server process
+    # Attributes supplied are passed to #new
+    def self.run(attrs={})
+      Thread.current.name = 'BatchJob.run'
+      server = new(attrs)
+      server.build_heartbeat
+      server.save!
+      create_indexes
+      register_signal_handlers
+
+      # If not a daemon also log messages to stdout
+      SemanticLogger.add_appender(STDOUT,  &SemanticLogger::Appender::Base.colorized_formatter) unless daemon
 
       logger.info "BatchJob Server started with #{server.max_threads} workers running"
+      started!
 
+      count = 0
       loop do
         sleep Config.instance.heartbeat_seconds
 
         # Update heartbeat so that monitoring tools know that this server is alive
-        server.set('heartbeat.updated_at' => Time.now)
+        server.set(
+          'heartbeat.updated_at'     => Time.now,
+          'heartbeat.active_threads' => active_thread_count
+        )
 
-        # Reload the server model every 5 minutes in case its config was changed
-        # server.reload
+        # Reload the server model every 10 heartbeats in case its config was changed
+        # TODO make 3 configurable
+        if count >= 3
+          server.reload
+          adjust_threads
+          count = 0
+        else
+          count += 1
+        end
 
-        break if shutting_down?
+        break if stopping?
       end
       logger.debug 'Waiting for worker threads to stop'
       threads.join
@@ -137,7 +155,8 @@ module BatchJob
     rescue Exception => exc
       logger.error('BatchJob::Server is stopping due to an exception', exc)
     ensure
-      @@running = false
+      # Destroy this server instance
+      server.destroy if server
     end
 
     # Create indexes
@@ -147,42 +166,58 @@ module BatchJob
       Single.create_indexes
     end
 
-    # Is the server shutting down?
-    def self.shutting_down?
-      @@shutdown == true
-    end
-
-    # Is the server running?
-    def self.running?
-      @@running == true
+    def active_thread_count
+      threads.count{ |i| i.alive? }
     end
 
     protected
 
-    @@shutdown = false
-    @@running  = false
-
-    # Check if their was a previous instance of this server running
-    # If so, re-queue all of its jobs
-    def perform_recovery
-      # TODO re-queue previous jobs
-      #Single.where()
+    def next_worker_id
+      @worker_id ||= 0
+      @worker_id += 1
     end
 
-    # Keep processing jobs until .shutting_down?
-    def worker(id)
-      Thread.current.name = "BatchJob Worker #{id}"
+    # Re-adjust the number of running threads to get it up to the
+    # required number of threads
+    def adjust_threads
+      count = active_thread_count
+      # Cleanup threads that have stopped
+      if count != threads.count
+        logger.info "Cleaning up #{threads.count - count} threads that went away"
+        threads.delete_if { |t| !t.alive? }
+      end
+
+      # Need to add more threads?
+      if count < max_threads
+        thread_count = max_threads - count
+        logger.info "Starting #{thread_count} threads"
+        thread_count.times.each do
+          # Start worker thread
+          threads << Thread.new(server, next_worker_id) do |server, id|
+            server.send(:worker, id)
+          end
+        end
+      end
+    end
+
+    # Keep processing jobs until server stops running
+    def worker(worker_id)
+      Thread.current.name = "BatchJob Worker #{worker_id}"
       logger.debug 'Started'
       loop do
-        if job = self.class.next_job
-          job.work
+        if job = next_job
+          logger.tagged(job.id.to_s) do
+            job.work(server: self)
+          end
         else
           # TODO Use exponential back-off algorithm
           sleep BatchJob::Config.instance.max_poll_interval
         end
-        break if self.class.shutting_down?
+        # Stop server if shutdown signal was raised
+        stop! if @@shutdown
+        break unless running?
       end
-      logger.debug 'Stopping thread due to shutdown request'
+      logger.debug "Stopping. Server state: #{state.inspect}"
     rescue Exception => exc
       logger.fatal('Unhandled exception in job processing thread', exc)
     end
@@ -192,7 +227,7 @@ module BatchJob
     #   with records that require processing
     #
     # If a job is in queued state it will be started
-    def self.next_job
+    def next_job
       query = {
         '$or' => [
           # Single Jobs
@@ -213,6 +248,8 @@ module BatchJob
         job
       end
     end
+
+    @@shutdown = false
 
     # Register handlers for the various signals
     # Term:

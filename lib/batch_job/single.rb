@@ -323,8 +323,7 @@ module BatchJob
     # is set in the job itself.
     #
     # Thread-safe, can be called by multiple threads at the same time
-    def work(_=nil)
-      logger.tagged(self.id.to_s) do
+    def work(server)
         raise 'Job must be started before calling #work' unless running?
         begin
           worker           = self.klass.constantize.new
@@ -344,11 +343,10 @@ module BatchJob
           1
         rescue Exception => exc
           worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-          set_exception(exc)
+        set_exception(server.name, exc)
           0
         end
       end
-    end
 
     protected
 
@@ -383,14 +381,14 @@ module BatchJob
     private
 
     # Set exception information for this job
-    def set_exception(exc)
+    def set_exception(server_name, exc)
       self.server = nil
       self.failure_count += 1
       self.exception = {
         'class'         => exc.class.to_s,
         'message'       => exc.message,
         'backtrace'     => exc.backtrace || [],
-        'server'        => Server.name,
+        'server'        => server_name,
       }
       fail!
     end
