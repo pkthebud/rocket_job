@@ -53,7 +53,7 @@ module BatchJob
     #   are started on the same host
     # The unique name is used on re-start to re-queue any jobs that were being processed
     # at the time the server or host unexpectedly terminated, if any
-    key :name,               String, default: -> { "#{Socket.gethostname}:$$" }
+    key :name,               String, default: -> { "#{Socket.gethostname}:#{$$}" }
 
     # The maximum number of worker threads
     #   If set, it will override the default value in BatchJob::Config
@@ -115,7 +115,6 @@ module BatchJob
     # Run the server process
     # Attributes supplied are passed to #new
     def self.run(attrs={})
-      Thread.current.name = 'BatchJob.run'
       server = new(attrs)
       server.build_heartbeat
       server.save!
@@ -123,41 +122,8 @@ module BatchJob
       register_signal_handlers
 
       # If not a daemon also log messages to stdout
-      SemanticLogger.add_appender(STDOUT,  &SemanticLogger::Appender::Base.colorized_formatter) unless daemon
-
-      logger.info "BatchJob Server started with #{server.max_threads} workers running"
-      started!
-
-      count = 0
-      loop do
-        sleep Config.instance.heartbeat_seconds
-
-        # Update heartbeat so that monitoring tools know that this server is alive
-        server.set(
-          'heartbeat.updated_at'     => Time.now,
-          'heartbeat.active_threads' => active_thread_count
-        )
-
-        # Reload the server model every 10 heartbeats in case its config was changed
-        # TODO make 3 configurable
-        if count >= 3
-          server.reload
-          adjust_threads
-          count = 0
-        else
-          count += 1
-        end
-
-        break if stopping?
-      end
-      logger.debug 'Waiting for worker threads to stop'
-      threads.join
-      logger.debug 'Shutdown'
-    rescue Exception => exc
-      logger.error('BatchJob::Server is stopping due to an exception', exc)
-    ensure
-      # Destroy this server instance
-      server.destroy if server
+      SemanticLogger.add_appender(STDOUT,  &SemanticLogger::Appender::Base.colorized_formatter) unless server.daemon?
+      server.run
     end
 
     # Create indexes
@@ -167,7 +133,55 @@ module BatchJob
       Single.create_indexes
     end
 
-    def active_thread_count
+    # Run this instance of the server
+    def run
+      # Apply instance specific logger to include server name with all log entries
+      logger = SemanticLogger["#{self.class.name} #{name}"]
+
+      Thread.current.name = 'BatchJob.run'
+      adjust_threads
+      started!
+      logger.info "BatchJob Server started with #{max_threads} workers running"
+
+      count = 0
+      loop do
+        # Update heartbeat so that monitoring tools know that this server is alive
+        set(
+          'heartbeat.updated_at'      => Time.now,
+          'heartbeat.current_threads' => thread_pool_count
+        )
+
+        # Reload the server model every 10 heartbeats in case its config was changed
+        # TODO make 3 configurable
+        if count >= 3
+          # Reload clears out instance variables too
+          t = @threads
+          reload
+          @threads = t
+          adjust_threads
+          count = 0
+        else
+          count += 1
+        end
+
+        # Stop server if shutdown signal was raised
+        stop! if @@shutdown && !stopping?
+
+        break if stopping?
+
+        sleep Config.instance.heartbeat_seconds
+      end
+      logger.debug 'Waiting for worker threads to stop'
+      threads.join
+      logger.debug 'Shutdown'
+    rescue Exception => exc
+      logger.error('BatchJob::Server is stopping due to an exception', exc)
+    ensure
+      # Destroy this server instance
+      destroy
+    end
+
+    def thread_pool_count
       threads.count{ |i| i.alive? }
     end
 
@@ -181,7 +195,7 @@ module BatchJob
     # Re-adjust the number of running threads to get it up to the
     # required number of threads
     def adjust_threads
-      count = active_thread_count
+      count = thread_pool_count
       # Cleanup threads that have stopped
       if count != threads.count
         logger.info "Cleaning up #{threads.count - count} threads that went away"
@@ -194,8 +208,12 @@ module BatchJob
         logger.info "Starting #{thread_count} threads"
         thread_count.times.each do
           # Start worker thread
-          threads << Thread.new(server, next_worker_id) do |server, id|
-            server.send(:worker, id)
+          threads << Thread.new(next_worker_id) do |id|
+            begin
+              worker(id)
+            rescue Exception => exc
+              logger.fatal('Cannot start worker thread', exc)
+            end
           end
         end
       end
@@ -208,15 +226,13 @@ module BatchJob
       loop do
         if job = next_job
           logger.tagged(job.id.to_s) do
-            job.work(server: self)
+            job.work(self)
           end
         else
           # TODO Use exponential back-off algorithm
           sleep BatchJob::Config.instance.max_poll_interval
         end
-        # Stop server if shutdown signal was raised
-        stop! if @@shutdown
-        break unless running?
+        break if @@shutdown || !running?
       end
       logger.debug "Stopping. Server state: #{state.inspect}"
     rescue Exception => exc
