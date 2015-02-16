@@ -127,6 +127,31 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal 0, @job.slices_active
         assert_equal true, @job.completed?
       end
+
+      should 'call before_event' do
+        @job.method = :event
+        named_parameters = { 'counter' => 23 }
+        @job.arguments << named_parameters
+        assert_equal 0, @job.record_count
+        @job.slice_size = 1
+        @lines.each { |row| @job.input_slice([row]) }
+        @job.start!
+
+        @job.reload
+        assert_equal named_parameters, @job.arguments.first
+        assert_equal @lines.size, @job.record_count
+
+        @job.work(@server)
+        assert_equal named_parameters.merge('before_event' => true, 'after_event' => true), @job.arguments.first
+
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        assert_equal @lines.size, @job.slices_processed
+        assert_equal 0, @job.slices_queued
+        assert_equal 0, @job.slices_active
+        assert_equal true, @job.completed?
+      end
     end
 
     context '#input_stream' do
@@ -325,8 +350,8 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work(@server)
-        assert_equal true, @job.completed?
         assert_equal 0, @job.slices_failed
+        assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect

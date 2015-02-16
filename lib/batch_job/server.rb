@@ -234,7 +234,7 @@ module BatchJob
           # Single Jobs
           { 'state' => 'queued' },
           # MultiRecord Jobs available for additional workers
-          { 'state' => 'running', 'parallel' => true }
+          { 'state' => 'running', 'sub_state' => :processing }
         ]
       }
 

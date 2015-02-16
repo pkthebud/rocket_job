@@ -36,13 +36,13 @@ module BatchJob
     # Breaks the :running state up into multiple sub-states:
     #   :running -> :before -> :processing -> :after -> :complete
     # TODO Validate values and can only be set when :state == :running
-    key :sub_state,               Boolean, default: :before
+    key :sub_state,               Symbol, default: :before
 
     after_destroy :cleanup!
 
     validates_presence_of :record_count, :compress_delimiter,
-      :slice_size, :record_count
-    # :compress, :encrypt, :parallel
+      :slice_size, :record_count, :sub_state
+    # :compress, :encrypt
 
     # Use a separate Mongo connection for the Records and Results
     # Allows the records and results to be stored in a separate Mongo database
@@ -476,7 +476,7 @@ module BatchJob
       return unless record_count && (input_collection.count == 0)
       # Run after_perform, only if it has not already been run by another worker
       # and prevent other workers from also completing it
-      if result = collection.update({ '_id' => id, 'state' => 'running' }, { '$set' => { 'state' => 'completed' }})
+      if result = collection.update({ '_id' => id, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
         if result['nModified'] > 0
           # after_perform
           call_method(worker, :after)
