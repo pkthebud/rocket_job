@@ -144,7 +144,7 @@ module BatchJob
     # For example a CSV file where the first line in the first slice contains
     # the header columns
     def before_work(slice_id, &block)
-      raise 'Job must be running and in before sub_state when calling #before_work' if running? && (sub_state == :before)
+      raise 'Job must be running and in before sub_state when calling #before_work' unless running? && (sub_state == :before)
       processed_record_count = 0
       worker                 = self.klass.constantize.new
       worker.batch_job       = self
@@ -476,12 +476,15 @@ module BatchJob
       return unless record_count && (input_collection.count == 0)
       # Run after_perform, only if it has not already been run by another worker
       # and prevent other workers from also completing it
-      if result = collection.update({ '_id' => id, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
+      if result = collection.update({ '_id' => id, 'state' => :running, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
         if result['nModified'] > 0
           # after_perform
           call_method(worker, :after)
           complete!
         end
+      else
+        reload
+        cleanup! if aborted?
       end
     end
 

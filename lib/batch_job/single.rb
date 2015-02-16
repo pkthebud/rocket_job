@@ -58,10 +58,6 @@ module BatchJob
     # Format is the same as cron
     key :schedule,                String
 
-    # If present an email will be sent to these addresses when the job completes or is aborted
-    # For multi-record jobs an email is also sent when the job starts
-    key :email_addresses,         Array
-
     # Job should be marked as repeatable when it can be run multiple times
     # without changing the system state or modifying database contents.
     # Setting to false will result in an additional lookup on the results collection
@@ -197,9 +193,6 @@ module BatchJob
         before do
           self.started_at = Time.now
         end
-        after do
-          UserMailer.batch_job_started(self).deliver if email_addresses.present?
-        end
         transitions from: :queued, to: :running
       end
 
@@ -210,7 +203,6 @@ module BatchJob
         end
         after do
           destroy if destroy_on_complete
-          UserMailer.batch_job_completed(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :completed
       end
@@ -219,18 +211,12 @@ module BatchJob
         before do
           self.completed_at = Time.now
         end
-        after do
-          UserMailer.batch_job_failed(self).deliver if email_addresses.present?
-        end
         transitions from: :running, to: :failed
       end
 
       event :pause do
         before do
           self.completed_at = Time.now
-        end
-        after do
-          UserMailer.batch_job_paused(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :paused
       end
@@ -239,18 +225,12 @@ module BatchJob
         before do
           self.completed_at = nil
         end
-        after do
-          UserMailer.batch_job_resumed(self).deliver if email_addresses.present?
-        end
         transitions from: :running, to: :paused
       end
 
       event :abort do
         before do
           self.completed_at = Time.now
-        end
-        after do
-          UserMailer.batch_job_aborted(self).deliver if email_addresses.present?
         end
         transitions from: :running, to: :aborted
         transitions from: :queued, to: :aborted

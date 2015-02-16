@@ -35,7 +35,6 @@ class SingleTest < Minitest::Test
         assert       @job.created_at
         assert_equal @description, @job.description
         assert_equal false, @job.destroy_on_complete
-        assert_equal 0, @job.email_addresses.count
         assert_nil   @job.expires_at
         assert_nil   @job.group
         assert_equal @arguments, @job.arguments
