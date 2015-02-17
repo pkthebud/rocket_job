@@ -39,6 +39,12 @@ module BatchJob
       MultiRecord.connection(connection)
       Server.connection(connection)
       Single.connection(connection)
+
+      db_name = connection.db.name
+      set_database_name(db_name)
+      MultiRecord.set_database_name(db_name)
+      Server.set_database_name(db_name)
+      Single.set_database_name(db_name)
     end
 
     # By default use global MongoMapper connection
