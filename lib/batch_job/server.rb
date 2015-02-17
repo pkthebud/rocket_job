@@ -100,6 +100,9 @@ module BatchJob
       event :pause do
         transitions from: :running, to: :paused
       end
+      event :resume do
+        transitions from: :paused, to: :running
+      end
       event :stop do
         transitions from: :running, to: :stopping
         transitions from: :paused,  to: :stopping
