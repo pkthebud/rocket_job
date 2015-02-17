@@ -35,8 +35,14 @@ module BatchJob
 
     # Replace the MongoMapper default mongo connection for holding jobs
     def self.mongo_connection=(connection)
+      connection(connection)
+      MultiRecord.connection(connection)
+      Server.connection(connection)
       Single.connection(connection)
     end
+
+    # By default use global MongoMapper connection
+    @@connection = MongoMapper.connection
 
     # Replace the MongoMapper default mongo connection for holding working data.
     # For example, slices, records, etc.

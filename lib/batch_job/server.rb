@@ -106,11 +106,7 @@ module BatchJob
       end
     end
 
-    attr_reader :threads
-
-    def threads
-      @threads ||=[]
-    end
+    attr_reader :thread_pool
 
     # Run the server process
     # Attributes supplied are passed to #new
@@ -133,13 +129,20 @@ module BatchJob
       Single.create_indexes
     end
 
+    # Returns [Array<Thread>] threads in the thread_pool
+    def thread_pool
+      @thread_pool ||=[]
+    end
+
     # Run this instance of the server
     def run
       # Apply instance specific logger to include server name with all log entries
       logger = SemanticLogger["#{self.class.name} #{name}"]
 
       Thread.current.name = 'BatchJob.run'
-      adjust_threads
+      build_heartbeat unless heartbeat
+
+      adjust_thread_pool(true)
       started!
       logger.info "BatchJob Server started with #{max_threads} workers running"
 
@@ -155,10 +158,10 @@ module BatchJob
         # TODO make 3 configurable
         if count >= 3
           # Reload clears out instance variables too
-          t = @threads
+          t = @thread_pool
           reload
-          @threads = t
-          adjust_threads
+          @thread_pool = t
+          adjust_thread_pool
           count = 0
         else
           count += 1
@@ -172,7 +175,7 @@ module BatchJob
         sleep Config.instance.heartbeat_seconds
       end
       logger.debug 'Waiting for worker threads to stop'
-      threads.join
+      thread_pool.each { |t| t.join }
       logger.debug 'Shutdown'
     rescue Exception => exc
       logger.error('BatchJob::Server is stopping due to an exception', exc)
@@ -182,7 +185,7 @@ module BatchJob
     end
 
     def thread_pool_count
-      threads.count{ |i| i.alive? }
+      thread_pool.count{ |i| i.alive? }
     end
 
     protected
@@ -194,12 +197,19 @@ module BatchJob
 
     # Re-adjust the number of running threads to get it up to the
     # required number of threads
-    def adjust_threads
+    #   Parameters
+    #     stagger_threads
+    #       Whether to stagger when the threads poll for work the first time
+    #       It spreads out the queue polling over the max_poll_interval so
+    #       that not all workers poll at the same time
+    #       The worker also respond faster than max_poll_interval when a new
+    #       job is added.
+    def adjust_thread_pool(stagger_threads=false)
       count = thread_pool_count
       # Cleanup threads that have stopped
-      if count != threads.count
-        logger.info "Cleaning up #{threads.count - count} threads that went away"
-        threads.delete_if { |t| !t.alive? }
+      if count != thread_pool.count
+        logger.info "Cleaning up #{thread_pool.count - count} threads that went away"
+        thread_pool.delete_if { |t| !t.alive? }
       end
 
       # Need to add more threads?
@@ -208,8 +218,9 @@ module BatchJob
         logger.info "Starting #{thread_count} threads"
         thread_count.times.each do
           # Start worker thread
-          threads << Thread.new(next_worker_id) do |id|
+          thread_pool << Thread.new(next_worker_id) do |id|
             begin
+              sleep (Config.instance.max_poll_interval.to_f / max_threads) * (id - 1) if stagger_threads
               worker(id)
             rescue Exception => exc
               logger.fatal('Cannot start worker thread', exc)

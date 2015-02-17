@@ -55,7 +55,7 @@ class SingleTest < Minitest::Test
         h = @job.status
         assert_equal :queued,      h[:state]
         assert_equal @description, h[:description]
-        assert h[:wait_seconds]
+        assert h[:seconds]
         assert h[:status] =~ /Queued for \d+.\d\d seconds/
       end
     end

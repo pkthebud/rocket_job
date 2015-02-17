@@ -257,13 +257,14 @@ module BatchJob
         h[:seconds]          = Time.now - started_at
         h[:paused_at]        = completed_at.in_time_zone(time_zone) if paused?
         h[:percent_complete] = percent_complete if percent_complete
+        h[:status]           = "Running for #{'%.2f' % h[:seconds]} seconds"
       when completed?
         h[:seconds]          = completed_at - started_at
         h[:status]           = "Completed at #{completed_at.in_time_zone(time_zone)}"
         h[:completed_at]     = completed_at.in_time_zone(time_zone)
       when queued?
-        h[:wait_seconds]     = Time.now - created_at
-        h[:status]           = "Queued for #{"%.2f" % h[:wait_seconds]} seconds"
+        h[:seconds]          = Time.now - created_at
+        h[:status]           = "Queued for #{'%.2f' % h[:seconds]} seconds"
       when aborted?
         h[:status]           = "Aborted at #{completed_at.in_time_zone(time_zone)}"
         h[:aborted_at]       = completed_at.in_time_zone(time_zone)

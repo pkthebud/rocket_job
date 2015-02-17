@@ -453,6 +453,8 @@ module BatchJob
         h[:slices_processed] = processed
         h[:slices_queued]    = slices_queued
         h[:total_records]    = record_count
+        h[:status]           = "Running for #{"%.2f" % h[:seconds]} seconds"
+        h[:status]           << " processing #{record_count} records" if record_count > 0
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
