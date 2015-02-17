@@ -214,6 +214,13 @@ module BatchJob
         transitions from: :running, to: :failed
       end
 
+      event :retry do
+        before do
+          self.completed_at = nil
+        end
+        transitions from: :failed, to: :running
+      end
+
       event :pause do
         before do
           self.completed_at = Time.now

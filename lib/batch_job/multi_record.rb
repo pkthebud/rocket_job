@@ -109,33 +109,44 @@ module BatchJob
     #
     def work(server, &block)
       raise 'Job must be started before calling #work' unless running?
-      start_time = Time.now
+      start_time             = Time.now
       processed_record_count = 0
-      worker                 = self.klass.constantize.new
-      worker.batch_job       = self
-      # If this is the first worker to pickup this job
-      if sub_state == :before
-        # before_perform
-        call_method(worker, :before)
-        self.sub_state = :processing
-        save!
-      end
+      begin
+        worker                 = self.klass.constantize.new
+        worker.batch_job       = self
+        # If this is the first worker to pickup this job
+        if sub_state == :before
+          # before_perform
+          call_method(worker, :before)
+          self.sub_state = :processing
+          save!
+        elsif (sub_state == :after) && failure_count > 0
+          # previous after_perform failed
+          call_method(worker, :after)
+          complete!
+          return 0
+        end
 
-      selector = {
-        query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-        update: { '$set' => { server: server.name, 'started_at' => Time.now } },
-        sort:   '_id'
-      }
-      while message = input_collection.find_and_modify(selector)
-        input_slice, header = parse_message(message)
-        process_slice(worker, input_slice, header, &block)
-        processed_record_count += input_slice.size
-        break if !server.running?
-        # Allow new jobs with a higher priority to interrupt this job worker
-        break if server.re_check_seconds > 0 && ((Time.now - start_time) >= server.re_check_seconds)
+        selector = {
+          query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
+          update: { '$set' => { server: server.name, 'started_at' => Time.now } },
+          sort:   '_id'
+        }
+        while message = input_collection.find_and_modify(selector)
+          input_slice, header = parse_message(message)
+          process_slice(worker, input_slice, header, &block)
+          processed_record_count += input_slice.size
+          break if !server.running?
+          # Allow new jobs with a higher priority to interrupt this job worker
+          break if server.re_check_seconds > 0 && ((Time.now - start_time) >= server.re_check_seconds)
+        end
+        check_completion(worker)
+        processed_record_count
+      rescue Exception => exc
+        worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
+        set_exception(server.name, exc)
+        processed_record_count
       end
-      check_completion(worker)
-      processed_record_count
     end
 
     # Once a job is running and in sub_state :before the worker can pre-process
@@ -479,7 +490,7 @@ module BatchJob
       # Run after_perform, only if it has not already been run by another worker
       # and prevent other workers from also completing it
       if result = collection.update({ '_id' => id, 'state' => :running, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
-        if result['nModified'] > 0
+        if (result['nModified'] || result['n']).to_i > 0
           # after_perform
           call_method(worker, :after)
           complete!
@@ -534,7 +545,7 @@ module BatchJob
       end
     rescue Exception => exc
       worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-      set_exception(header, exc, record_number)
+      set_slice_exception(header, exc, record_number)
     end
 
     # Returns [Array<String>, <Hash>] The decompressed / un-encrypted data string if applicable
@@ -576,7 +587,7 @@ module BatchJob
     end
 
     # Set exception information for a specific slice
-    def set_exception(header, exc, record_number)
+    def set_slice_exception(header, exc, record_number)
       # Set failure information and increment retry count
       input_collection.update(
         { '_id' => header['_id'] },

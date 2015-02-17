@@ -76,10 +76,6 @@ module BatchJob
     #   Internal use only. Do not set this field directly
     key :state,              Symbol, default: :starting
 
-    # Current state
-    #   Internal use only. Do not set this field directly
-    key :daemon,             Boolean, default: false
-
     validates_presence_of :state, :name, :max_threads
 
     # States
@@ -119,9 +115,6 @@ module BatchJob
       server.save!
       create_indexes
       register_signal_handlers
-
-      # If not a daemon also log messages to stdout
-      SemanticLogger.add_appender(STDOUT,  &SemanticLogger::Appender::Base.colorized_formatter) unless server.daemon?
       server.run
     end
 
@@ -139,9 +132,6 @@ module BatchJob
 
     # Run this instance of the server
     def run
-      # Apply instance specific logger to include server name with all log entries
-      logger = SemanticLogger["#{self.class.name} #{name}"]
-
       Thread.current.name = 'BatchJob.run'
       build_heartbeat unless heartbeat
 

@@ -152,6 +152,61 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal 0, @job.slices_active
         assert_equal true, @job.completed?
       end
+
+      should 'retry after an after_perform exception' do
+        @job.method = :able
+        @job.slice_size = 1
+        @lines.each { |line| @job.input_slice([line]) }
+        @job.start!
+
+        assert_equal @lines.size, @job.record_count
+
+        # New jobs should fail
+        @job.work(@server)
+        assert_equal 0, @job.slices_failed
+        assert_equal @lines.size, @job.slices_processed
+        assert_equal 0, @job.slices_queued
+        assert_equal 0, @job.slices_active
+        assert_equal true, @job.failed?
+
+        # Make records available for processing again
+        @job.retry!
+
+        # Re-process the failed job
+        @job.work(@server)
+        assert_equal @lines.size, @job.slices_processed
+        assert_equal 0, @job.slices_queued
+        assert_equal 0, @job.slices_active
+        assert_equal true, @job.completed?, @job.state
+      end
+
+      should 'retry after a before_perform exception' do
+        @job.method = :probable
+        @job.slice_size = 1
+        @lines.each { |line| @job.input_slice([line]) }
+        @job.start!
+
+        assert_equal @lines.size, @job.record_count
+
+        # New jobs should fail
+        @job.work(@server)
+        assert_equal 0, @job.slices_failed
+        assert_equal 0, @job.slices_processed
+        assert_equal @lines.size, @job.slices_queued
+        assert_equal 0, @job.slices_active
+        assert_equal true, @job.failed?
+
+        # Make records available for processing again
+        @job.retry!
+
+        # Re-process the failed job
+        @job.work(@server)
+        assert_equal @lines.size, @job.slices_processed
+        assert_equal 0, @job.slices_queued
+        assert_equal 0, @job.slices_active
+        assert_equal true, @job.completed?, @job.state
+      end
+
     end
 
     context '#input_stream' do
