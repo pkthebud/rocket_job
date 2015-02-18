@@ -401,12 +401,13 @@ module BatchJob
     end
 
     # Returns the Mongo Collection for the records queue name
-    # Thread-safe lazy initialized value
-    sync_attr_reader :input_collection do
-      collection = self.class.work_connection.db["batch_job.inputs.#{id.to_s}"]
-      # Index for find_and_modify
-      collection.ensure_index({'failed' => Mongo::ASCENDING, 'server' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING})
-      collection
+    def input_collection
+      @collection ||= begin
+        collection = self.class.work_connection.db["batch_job.inputs.#{id.to_s}"]
+        # Index for find_and_modify
+        collection.ensure_index({'failed' => Mongo::ASCENDING, 'server' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING})
+        collection
+      end
     end
 
     # Returns the Mongo Collection for the records queue name

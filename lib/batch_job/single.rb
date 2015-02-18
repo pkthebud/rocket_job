@@ -260,8 +260,12 @@ module BatchJob
 
       case
       when running? || paused?
-        h[:status]           = running? ? "Started at #{started_at.in_time_zone(time_zone)}" : "Paused at #{completed_at.in_time_zone(time_zone)}"
-        h[:seconds]          = Time.now - started_at
+        if running?
+          h[:status]         = started_at ? "Started at #{started_at.in_time_zone(time_zone)}" : "Started"
+        else
+          h[:status]         = "Paused at #{completed_at.in_time_zone(time_zone)}"
+        end
+        h[:seconds]          = started_at ? Time.now - started_at : 0
         h[:paused_at]        = completed_at.in_time_zone(time_zone) if paused?
         h[:percent_complete] = percent_complete if percent_complete
         h[:status]           = "Running for #{'%.2f' % h[:seconds]} seconds"
@@ -273,8 +277,14 @@ module BatchJob
         h[:seconds]          = Time.now - created_at
         h[:status]           = "Queued for #{'%.2f' % h[:seconds]} seconds"
       when aborted?
+        h[:seconds]          = started_at ? completed_at - started_at : 0
         h[:status]           = "Aborted at #{completed_at.in_time_zone(time_zone)}"
         h[:aborted_at]       = completed_at.in_time_zone(time_zone)
+        h[:percent_complete] = percent_complete if percent_complete
+      when failed?
+        h[:seconds]          = started_at ? completed_at - started_at : 0
+        h[:status]           = "Failed at #{completed_at.in_time_zone(time_zone)}"
+        h[:failed_at]        = completed_at.in_time_zone(time_zone)
         h[:percent_complete] = percent_complete if percent_complete
       else
         h[:status]           = "Unknown job state: #{state}"
