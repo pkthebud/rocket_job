@@ -250,6 +250,15 @@ module BatchJob
       ensure_index [[:state, 1], [:priority, 1]], background: true
     end
 
+    # Requeue all jobs for the specified dead server
+    def self.requeue_dead_server(server_name)
+      collection.update(
+        { 'server' => server_name, 'state' => :running },
+        { '$unset' => { 'server' => true, 'started_at' => true }, '$set' => { 'state' => :queued } },
+        multi: true
+      )
+    end
+
     # Returns [Hash] status of this job
     def status(time_zone='EST')
       h = {

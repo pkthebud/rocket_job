@@ -107,6 +107,9 @@ module BatchJob
 
     attr_reader :thread_pool
 
+    # Requeue any jobs being worked by this server when it is destroyed
+    before_destroy :requeue_jobs
+
     # Run the server process
     # Attributes supplied are passed to #new
     def self.run(attrs={})
@@ -125,6 +128,23 @@ module BatchJob
       Single.create_indexes
     end
 
+    # Destroy dead servers ( missed at least the last 4 heartbeats )
+    # Requeue jobs assigned to dead servers
+    # Destroy dead servers
+    def self.cleanup_dead_servers
+      dead_seconds = Config.instance.heartbeat_seconds * 4
+      each do |server|
+        next if (Time.now - server.heartbeat.updated_at) < dead_seconds
+        logger.warn "Destroying server #{server.name}, and requeueing its jobs"
+        server.destroy
+      end
+    end
+
+    # Stop all running servers
+    def self.stop_all
+      each {|s| s.stop! if s.running? || s.paused? }
+    end
+
     # Returns [Array<Thread>] threads in the thread_pool
     def thread_pool
       @thread_pool ||=[]
@@ -132,7 +152,7 @@ module BatchJob
 
     # Run this instance of the server
     def run
-      Thread.current.name = 'BatchJob.run'
+      Thread.current.name = 'BatchJob main'
       build_heartbeat unless heartbeat
 
       adjust_thread_pool(true)
@@ -205,6 +225,8 @@ module BatchJob
         thread_pool.delete_if { |t| !t.alive? }
       end
 
+      return unless running?
+
       # Need to add more threads?
       if count < max_threads
         thread_count = max_threads - count
@@ -268,6 +290,12 @@ module BatchJob
         job.start unless job.running?
         job
       end
+    end
+
+    # Requeue any jobs assigned to this server
+    def requeue_jobs
+      stop! if running? || paused?
+      BatchJob::MultiRecord.requeue_dead_server(name)
     end
 
     @@shutdown = false

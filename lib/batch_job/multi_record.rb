@@ -62,6 +62,13 @@ module BatchJob
       @@work_connection || self.connection
     end
 
+    # Requeue all jobs for the specified dead server
+    def self.requeue_dead_server(server_name)
+      # Check all job input collections for the dead server
+      where(state: :running).each { |job| job.requeue_dead_server(server_name) }
+      super
+    end
+
     # Returns [true|false] whether to collect the results from running this batch
     def collect_output?
       collect_output == true
@@ -459,7 +466,7 @@ module BatchJob
       when running? || paused?
         processed = slices_processed
         h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * slice_size) / record_count) * 100).to_i
-        h[:records_per_hour] = ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round
+        h[:records_per_hour] = started_at ? ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round : 0
         h[:slices_active]    = slices_active
         h[:slices_failed]    = slices_failed
         h[:slices_processed] = processed
@@ -467,6 +474,7 @@ module BatchJob
         h[:total_records]    = record_count
         h[:status]           = "Running for #{"%.2f" % h[:seconds]} seconds"
         h[:status]           << " processing #{record_count} records" if record_count > 0
+        h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
@@ -481,6 +489,11 @@ module BatchJob
     def cleanup!
       input_collection.drop
       output_collection.drop
+    end
+
+    # Requeue all jobs for a dead server
+    def requeue_dead_server(server_name)
+      input_collection.update({ 'server' => server_name }, { '$unset' => { 'server' => true, 'started_at' => true } })
     end
 
     protected
