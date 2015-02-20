@@ -295,6 +295,7 @@ module BatchJob
         h[:status]           = "Failed at #{completed_at.in_time_zone(time_zone)}"
         h[:failed_at]        = completed_at.in_time_zone(time_zone)
         h[:percent_complete] = percent_complete if percent_complete
+        h[:exception]        = exception.dup
       else
         h[:status]           = "Unknown job state: #{state}"
       end
@@ -358,6 +359,16 @@ module BatchJob
       end
     end
 
+    # Patch the way MongoMapper reloads a model
+    def reload
+      if doc = collection.find_one(:_id => id)
+        load_from_database(doc)
+        self
+      else
+        raise DocumentNotFound, "Document match #{_id.inspect} does not exist in #{collection.name} collection"
+      end
+    end
+
     protected
 
     # Calls a method on the worker, if it is defined for the worker
@@ -401,6 +412,7 @@ module BatchJob
         'server'        => server_name,
       }
       fail!
+      logger.error("Exception running #{klass}##{method}", exc)
     end
 
   end

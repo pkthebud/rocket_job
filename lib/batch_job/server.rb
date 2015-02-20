@@ -155,8 +155,9 @@ module BatchJob
       Thread.current.name = 'BatchJob main'
       build_heartbeat unless heartbeat
 
+      started
       adjust_thread_pool(true)
-      started!
+      save
       logger.info "BatchJob Server started with #{max_threads} workers running"
 
       count = 0
@@ -170,10 +171,7 @@ module BatchJob
         # Reload the server model every 10 heartbeats in case its config was changed
         # TODO make 3 configurable
         if count >= 3
-          # Reload clears out instance variables too
-          t = @thread_pool
           reload
-          @thread_pool = t
           adjust_thread_pool
           count = 0
         else
@@ -317,6 +315,16 @@ module BatchJob
         end
       rescue Exception
         logger.warn "SIGTERM handler not installed. Not able to shutdown gracefully"
+      end
+    end
+
+    # Patch the way MongoMapper reloads a model
+    def reload
+      if doc = collection.find_one(:_id => id)
+        load_from_database(doc)
+        self
+      else
+        raise DocumentNotFound, "Document match #{_id.inspect} does not exist in #{collection.name} collection"
       end
     end
 
