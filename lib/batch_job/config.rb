@@ -1,6 +1,6 @@
 # encoding: UTF-8
 module RocketJob
-  # Centralized Configuration for Batch Jobs
+  # Centralized Configuration for Rocket Jobs
   class Config
     include MongoMapper::Document
     include SyncAttr

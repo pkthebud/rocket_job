@@ -1,11 +1,11 @@
 # encoding: UTF-8
 require 'aasm'
 module RocketJob
-  # Batch Job identifies each batch job submission
+  # Rocket Job identifies each batch job submission
   #
   # - Make it an expired collection with purging of jobs completed_at older than 14 days
   #
-  # Batch Job is a global "priority based queue" (wikipedia link).
+  # Rocket Job is a global "priority based queue" (wikipedia link).
   # All jobs are placed in a single global queue and the job with the highest priority
   # is always processed first.
   #
@@ -16,7 +16,7 @@ module RocketJob
   # The global priority based queue ensures that the servers are utilized to their
   # capacity without requiring constant manual intervention.
   #
-  # Batch Job is designed to handle upwards of hundreds of millions of concurrent
+  # Rocket Job is designed to handle upwards of hundreds of millions of concurrent
   # "jobs" that are often encountered in high volume batch processing environments.
   # It is designed from the ground up to support large batch file processing.
   # For example a single file that contains millions of records to be processed
