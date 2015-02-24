@@ -2,16 +2,16 @@ lib = File.expand_path('../lib/', __FILE__)
 $:.unshift lib unless $:.include?(lib)
 
 # Maintain your gem's version:
-require 'batch_job/version'
+require 'rocket_job/version'
 
 # Describe your gem and declare its dependencies:
 Gem::Specification.new do |s|
-  s.name        = 'batch_job'
-  s.version     = BatchJob::VERSION
+  s.name        = 'rocket_job'
+  s.version     = RocketJob::VERSION
   s.platform    = Gem::Platform::RUBY
   s.authors     = ['Reid Morrison']
   s.email       = ['reidmo@gmail.com']
-  s.homepage    = 'https://github.com/reidmorrison/batch_job'
+  s.homepage    = 'https://github.com/reidmorrison/rocket_job'
   s.summary     = "High volume, priority based, Enterprise Batch Processing solution for Ruby"
   s.description = "Designed for batch processing from single records to millions of records in a single batch. Uses threading instead of process forking for greater throughtput."
   s.files       = Dir["lib/**/*", "LICENSE.txt", "Rakefile", "README.md"]

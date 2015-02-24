@@ -1,5 +1,5 @@
 # encoding: UTF-8
-module BatchJob
+module RocketJob
   # Centralized Configuration for Batch Jobs
   class Config
     include MongoMapper::Document
@@ -36,15 +36,15 @@ module BatchJob
     # Replace the MongoMapper default mongo connection for holding jobs
     def self.mongo_connection=(connection)
       connection(connection)
-      MultiRecord.connection(connection)
+      BatchJob.connection(connection)
       Server.connection(connection)
-      Single.connection(connection)
+      Job.connection(connection)
 
       db_name = connection.db.name
       set_database_name(db_name)
-      MultiRecord.set_database_name(db_name)
+      BatchJob.set_database_name(db_name)
       Server.set_database_name(db_name)
-      Single.set_database_name(db_name)
+      Job.set_database_name(db_name)
     end
 
     # By default use global MongoMapper connection
@@ -53,7 +53,7 @@ module BatchJob
     # Replace the MongoMapper default mongo connection for holding working data.
     # For example, slices, records, etc.
     def self.mongo_work_connection=(connection)
-      BatchJob::MultiRecord.work_connection = connection
+      RocketJob::BatchJob.work_connection = connection
     end
   end
 end

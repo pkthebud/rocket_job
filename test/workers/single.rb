@@ -1,7 +1,7 @@
-require 'batch_job'
+require 'rocket_job'
 module Workers
-  class Single
-    include BatchJob::Worker
+  class Job
+    include RocketJob::Worker
     @@result = nil
 
     # For holding test results

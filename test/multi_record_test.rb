@@ -1,12 +1,12 @@
 require_relative 'test_helper'
 require_relative 'workers/multi_record'
 
-# Unit Test for BatchJob::MultiRecord
+# Unit Test for RocketJob::BatchJob
 class MultiRecordJobTest < Minitest::Test
-  context BatchJob::MultiRecord do
+  context RocketJob::BatchJob do
     setup do
-      BatchJob::Single.destroy_all
-      @server = BatchJob::Server.new
+      RocketJob::Job.destroy_all
+      @server = RocketJob::Server.new
       @server.started
       @lines = [
         'this is some',
@@ -16,11 +16,11 @@ class MultiRecordJobTest < Minitest::Test
         'that we can delimit',
         'as necessary'
       ]
-      @job = BatchJob::MultiRecord.create(
+      @job = RocketJob::BatchJob.create(
         description:         @description,
         collect_output:      true,
         repeatable:          true,
-        klass:               'Workers::MultiRecord',
+        klass:               'Workers::BatchJob',
         destroy_on_complete: false
       )
     end
@@ -459,8 +459,8 @@ class MultiRecordJobTest < Minitest::Test
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_batch_job', BatchJob::MultiRecord.collection.db.name
-        job = BatchJob::MultiRecord.new
+        assert_equal 'test_batch_job', RocketJob::BatchJob.collection.db.name
+        job = RocketJob::BatchJob.new
         assert_equal 'test_batch_job_work', job.input_collection.db.name
         assert_equal 'test_batch_job_work', job.output_collection.db.name
       end

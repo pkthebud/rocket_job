@@ -1,4 +1,4 @@
-module BatchJob
+module RocketJob
   module Reader
     module Zip
       if defined?(JRuby)
@@ -9,7 +9,7 @@ module BatchJob
         # found in the zip file to the supplied block
         #
         # Example:
-        #   BatchJob::Reader::Zip.open_file(file_name) do |io_stream, source|
+        #   RocketJob::Reader::Zip.open_file(file_name) do |io_stream, source|
         #     # Display header info
         #     puts source.inspect
         #
@@ -36,7 +36,7 @@ module BatchJob
         #
         # Example:
         #   File.open('myfile.zip') do |io|
-        #     BatchJob::Reader::Zip.input_stream(io) do |io_stream, source|
+        #     RocketJob::Reader::Zip.input_stream(io) do |io_stream, source|
         #       # Display header info
         #       puts source.inspect
         #
@@ -61,7 +61,7 @@ module BatchJob
         begin
           require 'zip'
         rescue LoadError => exc
-          puts "Please install gem rubyzip so that BatchJob can read Zip files in Ruby MRI"
+          puts "Please install gem rubyzip so that RocketJob can read Zip files in Ruby MRI"
           raise(exc)
         end
 

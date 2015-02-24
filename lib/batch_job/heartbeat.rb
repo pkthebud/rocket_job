@@ -1,5 +1,5 @@
 # encoding: UTF-8
-module BatchJob
+module RocketJob
   # Heartbeat
   #
   # Information from the server as at it's last heartbeat

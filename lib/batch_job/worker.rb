@@ -6,18 +6,18 @@
 #   on_exception
 #     Called whenever an exception is raised while processing that job
 #
-module BatchJob
+module RocketJob
   module Worker
     def self.included(base)
       base.extend(ClassMethods)
       base.send(:include, SemanticLogger::Loggable)
-      base.send(:attr_accessor, :batch_job)
+      base.send(:attr_accessor, :rocket_job)
     end
 
     module ClassMethods
       def later(method, *args, &block)
         job = if block
-          j = MultiRecord.new(
+          j = BatchJob.new(
             klass:     name,
             method:    method.to_sym,
             arguments: args
@@ -25,13 +25,13 @@ module BatchJob
           block.call(j)
           j
         else
-          Single.new(
+          Job.new(
             klass:     name,
             method:    method.to_sym,
             arguments: args
           )
         end
-        if BatchJob::Config.test_mode
+        if RocketJob::Config.test_mode
           job.start
           job.work
         else

@@ -1,4 +1,4 @@
-module BatchJob
+module RocketJob
   module Writer
     module Zip
       if defined?(JRuby)
@@ -17,7 +17,7 @@ module BatchJob
         # The stream supplied to the block only responds to #write
         #
         # Example:
-        #   BatchJob::Writer::Zip.output_stream(output_stream, file_name) do |io_stream|
+        #   RocketJob::Writer::Zip.output_stream(output_stream, file_name) do |io_stream|
         #     io_stream.write("hello world\n")
         #     io_stream.write("and more\n")
         #   end
@@ -42,7 +42,7 @@ module BatchJob
         # The stream supplied to the block only responds to #write
         #
         # Example:
-        #   BatchJob::Writer::Zip.open_file('myfile.zip', 'hello.txt') do |io_stream|
+        #   RocketJob::Writer::Zip.open_file('myfile.zip', 'hello.txt') do |io_stream|
         #     io_stream.write("hello world\n")
         #     io_stream.write("and more\n")
         #   end
@@ -63,7 +63,7 @@ module BatchJob
         begin
           require 'zip'
         rescue LoadError => exc
-          puts "Please install gem rubyzip so that BatchJob can read Zip files in Ruby MRI"
+          puts "Please install gem rubyzip so that RocketJob can read Zip files in Ruby MRI"
           raise(exc)
         end
 

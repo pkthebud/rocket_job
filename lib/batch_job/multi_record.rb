@@ -1,7 +1,7 @@
 # encoding: UTF-8
 require 'zlib'
-module BatchJob
-  class MultiRecord < Single
+module RocketJob
+  class BatchJob < Job
     # SyncAttr v2
     if defined? SyncAttr::Attributes
       include SyncAttr::Attributes
@@ -126,7 +126,7 @@ module BatchJob
       processed_record_count = 0
       begin
         worker                 = self.klass.constantize.new
-        worker.batch_job       = self
+        worker.rocket_job       = self
         # If this is the first worker to pickup this job
         if sub_state == :before
           # before_perform
@@ -171,7 +171,7 @@ module BatchJob
       raise 'Job must be running and in before sub_state when calling #before_work' unless running? && (sub_state == :before)
       processed_record_count = 0
       worker                 = self.klass.constantize.new
-      worker.batch_job       = self
+      worker.rocket_job       = self
       if message = input_collection.find_one('_id' => slice_id)
         input_slice, header = parse_message(message)
         process_slice(worker, input_slice, header, &block)
@@ -288,7 +288,7 @@ module BatchJob
     #
     # Example:
     #   # Load from a Zip file:
-    #   BatchJob::Reader::Zip.input_file('myfile.zip') do |io, source|
+    #   RocketJob::Reader::Zip.input_file('myfile.zip') do |io, source|
     #     # Copy input details as parameters to the job
     #      job.parameters['source'] = source.merge!(type: :zip)
     #      job.input_stream(io)
@@ -297,7 +297,7 @@ module BatchJob
       options     = options.dup
       delimiter   = options.delete(:delimiter)
       buffer_size = options.delete(:buffer_size) || 65536
-      options.each { |option| raise ArgumentError.new("Unknown BatchJob::MultiRecord#add_records option: #{option.inspect}") }
+      options.each { |option| raise ArgumentError.new("Unknown RocketJob::BatchJob#add_records option: #{option.inspect}") }
 
       delimiter.force_encoding(UTF8_ENCODING) if delimiter
 
@@ -416,7 +416,7 @@ module BatchJob
     # Returns the Mongo Collection for the records queue name
     # Thread-safe lazy initialized value
     sync_attr_reader :input_collection do
-      collection = self.class.work_connection.db["batch_job.inputs.#{id.to_s}"]
+      collection = self.class.work_connection.db["rocket_job.inputs.#{id.to_s}"]
       # Index for find_and_modify
       collection.ensure_index({'failed' => Mongo::ASCENDING, 'server' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING})
       collection
@@ -424,7 +424,7 @@ module BatchJob
 
     # Returns the Mongo Collection for the records queue name
     def output_collection
-      @output_collection ||= self.class.work_connection.db["batch_job.outputs.#{id.to_s}"]
+      @output_collection ||= self.class.work_connection.db["rocket_job.outputs.#{id.to_s}"]
     end
 
     # Returns [Integer] percent of records completed so far
@@ -531,7 +531,7 @@ module BatchJob
         logger.info "Start #{slice}"
         output_slice = logger.benchmark_info(
           "Completed #{slice}",
-          metric:             "batch_job/#{worker.class.name.underscore}/#{self.method}",
+          metric:             "rocket_job/#{worker.class.name.underscore}/#{self.method}",
           log_exception:      :full,
           on_exception_level: :error,
           silence:            self.log_level

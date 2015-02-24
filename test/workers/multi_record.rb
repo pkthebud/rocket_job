@@ -1,7 +1,7 @@
-require 'batch_job'
+require 'rocket_job'
 module Workers
-  class MultiRecord
-    include BatchJob::Worker
+  class BatchJob
+    include RocketJob::Worker
 
     def perform(record, header)
       record
@@ -21,7 +21,7 @@ module Workers
 
     # Raise an exception the first time it is called
     def after_able
-      if batch_job.failure_count > 0
+      if rocket_job.failure_count > 0
         0
       else
         raise 'After exception'
@@ -30,7 +30,7 @@ module Workers
 
     # Raise an exception the first time it is called
     def before_probable
-      if batch_job.failure_count > 0
+      if rocket_job.failure_count > 0
         0
       else
         raise 'Before exception'

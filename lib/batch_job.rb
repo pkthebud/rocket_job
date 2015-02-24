@@ -4,26 +4,26 @@ require 'mongo_ha'
 require 'mongo_mapper'
 require 'semantic_logger'
 require 'symmetric-encryption'
-require 'batch_job/version'
+require 'rocket_job/version'
 
-module BatchJob
-  autoload :Config,                'batch_job/config'
-  autoload :Heartbeat,             'batch_job/heartbeat'
-  autoload :Single,                'batch_job/single'
-  autoload :MultiRecord,           'batch_job/multi_record'
-  autoload :Server,                'batch_job/server'
-  autoload :Worker,                'batch_job/worker'
+module RocketJob
+  autoload :Config,                'rocket_job/config'
+  autoload :Heartbeat,             'rocket_job/heartbeat'
+  autoload :Job,                   'rocket_job/single'
+  autoload :BatchJob,              'rocket_job/multi_record'
+  autoload :Server,                'rocket_job/server'
+  autoload :Worker,                'rocket_job/worker'
   module Reader
-    autoload :Zip,                 'batch_job/reader/zip'
+    autoload :Zip,                 'rocket_job/reader/zip'
   end
   module Utility
-    autoload :CSVRow,              'batch_job/utility/csv_row'
+    autoload :CSVRow,              'rocket_job/utility/csv_row'
   end
   module Writer
-    autoload :Zip,                 'batch_job/writer/zip'
+    autoload :Zip,                 'rocket_job/writer/zip'
   end
   module Jobs
-    autoload :PerformanceJob,      'batch_job/jobs/performance_job'
+    autoload :PerformanceJob,      'rocket_job/jobs/performance_job'
   end
 
   UTF8_ENCODING = Encoding.find("UTF-8").freeze

@@ -1,5 +1,5 @@
 require 'csv'
-module BatchJob
+module RocketJob
   module Utility
     # For parsing a single line of CSV at a time
     # 2 to 3 times better performance than CSV.parse_line and considerably less
@@ -8,7 +8,7 @@ module BatchJob
       # CSV cannot read just a single line without building a new CSV object every time
       # Fake it out by re-winding a stream and replace the line after every read
       # Hard code the row separator so that it does not try to auto-detect it
-      def initialize(encoding=BatchJob::UTF8_ENCODING)
+      def initialize(encoding=RocketJob::UTF8_ENCODING)
         @io  = StringIO.new(''.force_encoding(encoding))
         @csv = CSV.new(@io, row_sep: '')
       end

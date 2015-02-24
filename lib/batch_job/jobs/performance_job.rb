@@ -1,14 +1,14 @@
-module BatchJob
+module RocketJob
   module Jobs
     # # Load a file for processing by the cluster of workers
     # filename = 'large_file.zip'
-    # job = BatchJob::Jobs::PerformanceJob.upload(file_name, :perform)
+    # job = RocketJob::Jobs::PerformanceJob.upload(file_name, :perform)
     #
     # # Watch the status util it completes
     # loop { p job.reload.status; break if job.completed?; sleep 5}
     #
     # # Download the results into a Zip file
-    # BatchJob::Writer::Zip.output_file('myfile.zip', 'data.csv') do |file|
+    # RocketJob::Writer::Zip.output_file('myfile.zip', 'data.csv') do |file|
     #   job.output_stream(file)
     # end
     #
@@ -30,7 +30,7 @@ module BatchJob
     # # Local MongoDB V2.6.7
     #
     # # The following was run between every run to clear out mongo data
-    # BatchJob::Single.destroy_all
+    # RocketJob::Job.destroy_all
     #
     # # JRuby was run on Oracle Java V1.8.0_31
     # # using the following java options:
@@ -41,14 +41,14 @@ module BatchJob
     #    576    576    576    576       0  1153|0       0  2.58g  7.62g   474m      0
     #
     class PerformanceJob
-      include BatchJob::Worker
+      include RocketJob::Worker
       # # Load a file for processing by the cluster of workers
       # filename = 'large_file.zip'
-      # job = BatchJob::Jobs::PerformanceJob.upload(file_name, :perform)
+      # job = RocketJob::Jobs::PerformanceJob.upload(file_name, :perform)
       #
       def self.upload(file_name, method = :perform)
         start_time = Time.now
-        batch_job = later(method) do |job|
+        rocket_job = later(method) do |job|
           job.destroy_on_complete = false
           job.encrypt             = true
           job.compress            = true
@@ -60,7 +60,7 @@ module BatchJob
 
           # Upload the file into Mongo
           if file_name.ends_with?('.zip')
-            BatchJob::Reader::Zip.input_file(file_name) do |io, source|
+            RocketJob::Reader::Zip.input_file(file_name) do |io, source|
               job.input_stream(io)
             end
           else
@@ -70,7 +70,7 @@ module BatchJob
           end
         end
         puts "Loaded #{file_name} in #{Time.now - start_time} seconds"
-        batch_job
+        rocket_job
       end
 
       # No operation, just return the supplied line (record)
@@ -91,11 +91,11 @@ module BatchJob
       if defined?(JRuby)
         # Due a JRuby optimization issue we cannot re-use the same instance
         def csv_parser
-          BatchJob::Utility::CSVRow.new
+          RocketJob::Utility::CSVRow.new
         end
       else
         def csv_parser
-          @csv_parser ||= BatchJob::Utility::CSVRow.new
+          @csv_parser ||= RocketJob::Utility::CSVRow.new
         end
       end
     end

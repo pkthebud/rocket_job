@@ -1,7 +1,7 @@
 # encoding: UTF-8
 require 'socket'
 require 'sync_attr'
-module BatchJob
+module RocketJob
   # Server
   #
   # On startup a server instance will automatically register itself
@@ -9,24 +9,24 @@ module BatchJob
   #
   # Starting a server in the foreground:
   #   - Using a Rails runner:
-  #     bin/rails r 'BatchJob::Server.start'
+  #     bin/rails r 'RocketJob::Server.start'
   #
   #   - Or, using a rake task:
-  #     bin/rake batch_job:server
+  #     bin/rake rocket_job:server
   #
   # Starting a server in the background:
   #   - Using a Rails runner:
-  #     nohup bin/rails r 'BatchJob::Server.start' 2>&1 1>output.log &
+  #     nohup bin/rails r 'RocketJob::Server.start' 2>&1 1>output.log &
   #
   #   - Or, using a rake task:
-  #     nohup bin/rake batch_job:server 2>&1 1>output.log &
+  #     nohup bin/rake rocket_job:server 2>&1 1>output.log &
   #
   # Stopping a server:
   #   - Stop the server via the Web UI
   #   - Send a regular kill signal to make it shutdown once all active work is complete
   #       kill <pid>
   #   - Or, use the following Ruby code:
-  #     server = BatchJob::Server.where(name: 'server name').first
+  #     server = RocketJob::Server.where(name: 'server name').first
   #     server.stop!
   #
   #   Sending the kill signal locally will result in starting the shutdown process
@@ -36,7 +36,7 @@ module BatchJob
   # Restarting a server:
   #   - Restart the server via the Web UI
   #   - Or, use the following Ruby code:
-  #     server = BatchJob::Server.where(name: 'server name').first
+  #     server = RocketJob::Server.where(name: 'server name').first
   #     server.restart!
   #
   #   It can take up to 30 seconds (the heartbeat interval) before the server re-starts
@@ -56,14 +56,14 @@ module BatchJob
     key :name,               String, default: -> { "#{Socket.gethostname}:#{$$}" }
 
     # The maximum number of worker threads
-    #   If set, it will override the default value in BatchJob::Config
+    #   If set, it will override the default value in RocketJob::Config
     key :max_threads,        Integer, default: -> { Config.instance.max_worker_threads }
 
     # When this server process was started
     key :started_at,         Time
 
     # The heartbeat information for this server
-    one :heartbeat,          class_name: 'BatchJob::Heartbeat'
+    one :heartbeat,          class_name: 'RocketJob::Heartbeat'
 
     # Number of seconds job workers will be requested to return after so that
     # jobs with a higher priority can interrupt current jobs
@@ -126,7 +126,7 @@ module BatchJob
     def self.create_indexes
       ensure_index [[:name, 1]], background: true, unique: true
       # Also create indexes for the jobs collection
-      Single.create_indexes
+      Job.create_indexes
     end
 
     # Destroy dead servers ( missed at least the last 4 heartbeats )
@@ -153,13 +153,13 @@ module BatchJob
 
     # Run this instance of the server
     def run
-      Thread.current.name = 'BatchJob main'
+      Thread.current.name = 'RocketJob main'
       build_heartbeat unless heartbeat
 
       started
       adjust_thread_pool(true)
       save
-      logger.info "BatchJob Server started with #{max_threads} workers running"
+      logger.info "RocketJob Server started with #{max_threads} workers running"
 
       count = 0
       loop do
@@ -195,7 +195,7 @@ module BatchJob
       thread_pool.each { |t| t.join }
       logger.debug 'Shutdown'
     rescue Exception => exc
-      logger.error('BatchJob::Server is stopping due to an exception', exc)
+      logger.error('RocketJob::Server is stopping due to an exception', exc)
     ensure
       # Destroy this server instance
       destroy
@@ -251,7 +251,7 @@ module BatchJob
 
     # Keep processing jobs until server stops running
     def worker(worker_id)
-      Thread.current.name = "BatchJob Worker #{worker_id}"
+      Thread.current.name = "RocketJob Worker #{worker_id}"
       logger.debug 'Started'
       loop do
         worked = false
@@ -264,10 +264,10 @@ module BatchJob
           if worked
             # Keeps workers staggered across the poll interval so that not
             # all workers poll again at the same time
-            sleep rand(BatchJob::Config.instance.max_poll_seconds * 1000) / 1000
+            sleep rand(RocketJob::Config.instance.max_poll_seconds * 1000) / 1000
             worked = false
           else
-            sleep BatchJob::Config.instance.max_poll_seconds
+            sleep RocketJob::Config.instance.max_poll_seconds
           end
         end
         break if @@shutdown || !running?
@@ -285,19 +285,19 @@ module BatchJob
     def next_job
       query = {
         '$or' => [
-          # Single Jobs
+          # Job Jobs
           { 'state' => 'queued' },
-          # MultiRecord Jobs available for additional workers
+          # BatchJob Jobs available for additional workers
           { 'state' => 'running', 'sub_state' => :processing }
         ]
       }
 
-      if doc = Single.find_and_modify(
+      if doc = Job.find_and_modify(
           query:  query,
           sort:   [['priority', 'asc'], ['created_at', 'asc']],
           update: { '$set' => { 'server' => self.name, 'state' => 'running' } }
         )
-        job = Single.load(doc)
+        job = Job.load(doc)
         # Also update in-memory state and run call-backs
         job.start unless job.running?
         job
@@ -307,7 +307,7 @@ module BatchJob
     # Requeue any jobs assigned to this server
     def requeue_jobs
       stop! if running? || paused?
-      BatchJob::MultiRecord.requeue_dead_server(name)
+      RocketJob::BatchJob.requeue_dead_server(name)
     end
 
     @@shutdown = false

@@ -1,6 +1,6 @@
 # encoding: UTF-8
 require 'aasm'
-module BatchJob
+module RocketJob
   # Batch Job identifies each batch job submission
   #
   # - Make it an expired collection with purging of jobs completed_at older than 14 days
@@ -22,7 +22,7 @@ module BatchJob
   # For example a single file that contains millions of records to be processed
   # as quickly as possible without impacting other batch jobs with a higher priority.
   #
-  class Single
+  class Job
     include MongoMapper::Document
     include AASM
     include SemanticLogger::Loggable
@@ -132,11 +132,11 @@ module BatchJob
 
     # Store the Hash output from this job if collect_output is true,
     # and the job returned actually returned a Hash, otherwise nil
-    # Not applicable to MultiRecord jobs
+    # Not applicable to BatchJob jobs
     key :output,                  Hash
 
     # Store all job types in this collection
-    set_collection_name 'batch_job.jobs'
+    set_collection_name 'rocket_job.jobs'
 
     validates_presence_of :state, :failure_count, :created_at, :percent_complete,
       :klass, :method
@@ -146,7 +146,7 @@ module BatchJob
 
     # State Machine events and transitions
     #
-    # For Single Record jobs, usual processing:
+    # For Job Record jobs, usual processing:
     #   :queued -> :running -> :completed
     #                       -> :paused     -> :running  ( manual )
     #                       -> :failed     -> :running  ( manual )
@@ -337,7 +337,7 @@ module BatchJob
       raise 'Job must be started before calling #work' unless running?
       begin
         worker           = self.klass.constantize.new
-        worker.batch_job = self
+        worker.rocket_job = self
         # before_perform
         call_method(worker, :before)
 
@@ -374,7 +374,7 @@ module BatchJob
     # Adds the event name to the method call if supplied
     #
     # Parameters
-    #   worker [BatchJob::Worker]
+    #   worker [RocketJob::Worker]
     #     The worker instance on which to invoke the method
     #
     #   event [Symbol]
@@ -388,7 +388,7 @@ module BatchJob
         logger.info "Start #{method_name}"
         logger.benchmark_info(
           "Completed #{method_name}",
-          metric:             "batch_job/#{worker.class.name.underscore}/#{the_method}",
+          metric:             "rocket_job/#{worker.class.name.underscore}/#{the_method}",
           log_exception:      :full,
           on_exception_level: :error,
           silence:            self.log_level

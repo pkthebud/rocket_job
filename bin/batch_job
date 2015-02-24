@@ -1,15 +1,15 @@
 #!/usr/bin/env ruby
-require 'batch_job'
+require 'rocket_job'
 
-# Start a batch_job server instance
+# Start a rocket_job server instance
 # Parameters
 #   server_name
 begin
-  BatchJob::Server.run(ARGV[0])
+  RocketJob::Server.run(ARGV[0])
 rescue => exc
   # Failsafe logger that writes to STDERROR
   SemanticLogger.add_appender(STDERROR, :error, &SemanticLogger::Appender::Base.colorized_formatter)
-  SemanticLogger['BatchJob'].error('Batch Job shutting down due to exception', exc)
+  SemanticLogger['RocketJob'].error('Batch Job shutting down due to exception', exc)
   SemanticLogger.flush
   exit 1
 end

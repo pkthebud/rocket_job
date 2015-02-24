@@ -1,17 +1,17 @@
 require_relative 'test_helper'
 require_relative 'workers/single'
 
-# Unit Test for BatchJob::Single
+# Unit Test for RocketJob::Job
 class SingleTest < Minitest::Test
-  context BatchJob::Single do
+  context RocketJob::Job do
     setup do
-      @server = BatchJob::Server.new
+      @server = RocketJob::Server.new
       @server.started
       @description = 'Hello World'
       @arguments   = [ 1 ]
-      @job = BatchJob::Single.new(
+      @job = RocketJob::Job.new(
         description:         @description,
-        klass:               'Workers::Single',
+        klass:               'Workers::Job',
         arguments:           @arguments,
         destroy_on_complete: false
       )
@@ -23,7 +23,7 @@ class SingleTest < Minitest::Test
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_batch_job', BatchJob::Single.collection.db.name
+        assert_equal 'test_batch_job', RocketJob::Job.collection.db.name
       end
     end
 
@@ -65,7 +65,7 @@ class SingleTest < Minitest::Test
         @job.start!
         assert_equal 1, @job.work(@server)
         assert_equal true, @job.completed?
-        assert_equal 2,    Workers::Single.result
+        assert_equal 2,    Workers::Job.result
       end
 
       should 'call specific method' do
@@ -74,14 +74,14 @@ class SingleTest < Minitest::Test
         @job.start!
         assert_equal 1, @job.work(@server)
         assert_equal true, @job.completed?
-        assert_equal 68,    Workers::Single.result
+        assert_equal 68,    Workers::Job.result
       end
 
       should 'destroy on complete' do
         @job.destroy_on_complete = true
         @job.start!
         assert_equal 1, @job.work(@server)
-        assert_equal nil, BatchJob::Single.find_by_id(@job.id)
+        assert_equal nil, RocketJob::Job.find_by_id(@job.id)
       end
 
       should 'silence logging when log_level is set' do
@@ -91,7 +91,7 @@ class SingleTest < Minitest::Test
         @job.arguments           = []
         @job.start!
         logged = false
-        Workers::Single.logger.stub(:log_internal, -> { logged = true }) do
+        Workers::Job.logger.stub(:log_internal, -> { logged = true }) do
           assert_equal 1, @job.work(@server)
         end
         assert_equal false, logged
@@ -106,7 +106,7 @@ class SingleTest < Minitest::Test
         logged = false
         # Raise global log level to :info
         SemanticLogger.stub(:default_level_index, 3) do
-          Workers::Single.logger.stub(:log_internal, -> { logged = true }) do
+          Workers::Job.logger.stub(:log_internal, -> { logged = true }) do
             assert_equal 1, @job.work(@server)
           end
         end
