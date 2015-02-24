@@ -246,8 +246,7 @@ module BatchJob
 
     # Create indexes
     def self.create_indexes
-      # Create indexes
-      ensure_index [[:state, 1], [:priority, 1]], background: true
+      ensure_index [[:state, 1], [:priority, 1], [:created_at, 1], [:sub_state, 1]]
     end
 
     # Requeue all jobs for the specified dead server

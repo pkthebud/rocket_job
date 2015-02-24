@@ -100,8 +100,9 @@ module BatchJob
         transitions from: :paused, to: :running
       end
       event :stop do
-        transitions from: :running, to: :stopping
-        transitions from: :paused,  to: :stopping
+        transitions from: :running,  to: :stopping
+        transitions from: :paused,   to: :stopping
+        transitions from: :starting, to: :stopping
       end
     end
 
@@ -186,6 +187,11 @@ module BatchJob
         sleep Config.instance.heartbeat_seconds
       end
       logger.debug 'Waiting for worker threads to stop'
+      # TODO Put a timeout on join.
+      # Log Thread dump for active threads
+      # Compare thread dumps for any changes, force down if no change?
+      # reload, if model missing: Send Shutdown exception to each thread
+      #           5 more seconds then exit
       thread_pool.each { |t| t.join }
       logger.debug 'Shutdown'
     rescue Exception => exc
@@ -211,9 +217,9 @@ module BatchJob
     #   Parameters
     #     stagger_threads
     #       Whether to stagger when the threads poll for work the first time
-    #       It spreads out the queue polling over the max_poll_interval so
+    #       It spreads out the queue polling over the max_poll_seconds so
     #       that not all workers poll at the same time
-    #       The worker also respond faster than max_poll_interval when a new
+    #       The worker also respond faster than max_poll_seconds when a new
     #       job is added.
     def adjust_thread_pool(stagger_threads=false)
       count = thread_pool_count
@@ -233,7 +239,7 @@ module BatchJob
           # Start worker thread
           thread_pool << Thread.new(next_worker_id) do |id|
             begin
-              sleep (Config.instance.max_poll_interval.to_f / max_threads) * (id - 1) if stagger_threads
+              sleep (Config.instance.max_poll_seconds.to_f / max_threads) * (id - 1) if stagger_threads
               worker(id)
             rescue Exception => exc
               logger.fatal('Cannot start worker thread', exc)
@@ -248,13 +254,21 @@ module BatchJob
       Thread.current.name = "BatchJob Worker #{worker_id}"
       logger.debug 'Started'
       loop do
+        worked = false
         if job = next_job
           logger.tagged(job.id.to_s) do
             job.work(self)
+            worked = true
           end
         else
-          # TODO Use exponential back-off algorithm
-          sleep BatchJob::Config.instance.max_poll_interval
+          if worked
+            # Keeps workers staggered across the poll interval so that not
+            # all workers poll again at the same time
+            sleep rand(BatchJob::Config.instance.max_poll_seconds * 1000) / 1000
+            worked = false
+          else
+            sleep BatchJob::Config.instance.max_poll_seconds
+          end
         end
         break if @@shutdown || !running?
       end

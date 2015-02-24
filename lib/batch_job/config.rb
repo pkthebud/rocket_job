@@ -27,7 +27,7 @@ module BatchJob
     key :heartbeat_seconds,          Integer, default: 15
 
     # Maximum number of seconds between checks for new jobs
-    key :max_poll_interval,          Integer, default: 5
+    key :max_poll_seconds,           Integer, default: 5
 
     # Limit the number of workers per job class per server
     #    'class_name' / group => 100
