@@ -126,7 +126,7 @@ module RocketJob
       processed_record_count = 0
       begin
         worker                 = self.klass.constantize.new
-        worker.rocket_job       = self
+        worker.rocket_job      = self
         # If this is the first worker to pickup this job
         if sub_state == :before
           # before_perform
@@ -136,6 +136,7 @@ module RocketJob
         elsif (sub_state == :after) && failure_count > 0
           # previous after_perform failed
           call_method(worker, :after)
+          self.sub_state = :complete
           complete!
           return 0
         end
@@ -377,12 +378,7 @@ module RocketJob
     #   #output_stream does not close the stream after all results have
     #   been written
     def output_stream(io, delimiter=$/)
-      output_collection.find({}, sort: '_id', timeout: false) do |cursor|
-        cursor.each do |message|
-          slice, _ = parse_message(message)
-          io.write(slice.join(delimiter) + delimiter)
-        end
-      end
+      each_output_slice { |slice, _| io.write(slice.join(delimiter) + delimiter) }
       io
     end
 
@@ -397,6 +393,13 @@ module RocketJob
     def each_output_slice(&block)
       output_collection.find({}, sort: '_id', timeout: false) do |cursor|
         cursor.each { |message| block.call(*parse_message(message)) }
+      end
+    end
+
+    # Iterate over each output record
+    def each_output_record(&block)
+      each_output_slice do |slice, _|
+        slice.each{ |record| block.call(record) }
       end
     end
 
@@ -510,8 +513,10 @@ module RocketJob
       # and prevent other workers from also completing it
       if result = collection.update({ '_id' => id, 'state' => :running, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
         if (result['nModified'] || result['n']).to_i > 0
+          self.sub_state = :after
           # after_perform
           call_method(worker, :after)
+          self.sub_state = :complete
           complete!
         end
       else

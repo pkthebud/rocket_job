@@ -83,8 +83,11 @@ class MultiRecordJobTest < Minitest::Test
 
         count = 0
         @job.work(@server)
-        @job.each_output_slice do |slice, header|
-          assert_equal @lines[count], slice.first
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        @job.each_output_record do |record|
+          assert_equal @lines[count], record
           count += 1
         end
         assert_equal 0, @job.slices_failed
@@ -122,9 +125,13 @@ class MultiRecordJobTest < Minitest::Test
         # Re-process the failed jobs
         @job.method = :perform
         @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
+        assert_equal :complete, @job.sub_state
         assert_equal true, @job.completed?
       end
 
@@ -143,6 +150,7 @@ class MultiRecordJobTest < Minitest::Test
 
         @job.work(@server)
         assert_equal named_parameters.merge('before_event' => true, 'after_event' => true), @job.arguments.first
+        assert_equal :complete, @job.sub_state
 
         failures = []
         @job.each_failed_record { |r, h| failures << { header: h, record: r } }
@@ -163,21 +171,28 @@ class MultiRecordJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
         assert_equal 0, @job.slices_failed
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
         assert_equal true, @job.failed?
+        assert_equal :after, @job.sub_state
 
         # Make records available for processing again
         @job.retry!
 
         # Re-process the failed job
         @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
         assert_equal true, @job.completed?, @job.state
+        assert_equal :complete, @job.sub_state
       end
 
       should 'retry after a before_perform exception' do
@@ -195,15 +210,20 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal @lines.size, @job.slices_queued
         assert_equal 0, @job.slices_active
         assert_equal true, @job.failed?
+        assert_equal :before, @job.sub_state
 
         # Make records available for processing again
         @job.retry!
 
         # Re-process the failed job
         @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
+        assert_equal :complete, @job.sub_state
         assert_equal true, @job.completed?, @job.state
       end
 
@@ -392,8 +412,10 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_slice([ @lines.first ])
         @job.start!
         @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
         assert_equal true, @job.completed?
-        assert_equal 0, @job.slices_failed
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
@@ -405,7 +427,9 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work(@server)
-        assert_equal 0, @job.slices_failed
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
         assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.output_stream(stream)
@@ -419,8 +443,10 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work(@server)
-        assert_equal 0, @job.slices_failed
-        assert_equal true, @job.completed?
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -433,8 +459,10 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work(@server)
-        assert_equal 0, @job.slices_failed
-        assert_equal true, @job.completed?
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
@@ -448,8 +476,11 @@ class MultiRecordJobTest < Minitest::Test
         @job.input_records { slices.shift }
         @job.start!
         @job.work(@server)
-        assert_equal 0, @job.slices_failed
-        assert_equal true, @job.completed?
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        assert_equal :complete, @job.sub_state
+        assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
