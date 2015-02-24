@@ -2,7 +2,7 @@ require_relative 'test_helper'
 require_relative 'workers/batch_job'
 
 # Unit Test for RocketJob::BatchJob
-class MultiRecordJobTest < Minitest::Test
+class BatchJobTest < Minitest::Test
   context RocketJob::BatchJob do
     setup do
       RocketJob::Job.destroy_all
@@ -93,6 +93,30 @@ class MultiRecordJobTest < Minitest::Test
         assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         assert_equal @lines.size, count
+        RocketJob::Job.find(@job.id)
+      end
+
+      should 'destroy on completion' do
+        @job.destroy_on_complete = true
+        assert_equal 0, @job.record_count
+        @job.slice_size = 1
+        @lines.each { |row| @job.input_slice([row]) }
+        @job.start!
+
+        assert_equal @lines.size, @job.record_count
+
+        count = 0
+        @job.work(@server)
+        failures = []
+        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.slices_failed, failures
+        @job.each_output_record do |record|
+          count += 1
+        end
+        assert_equal 0, @job.slices_failed
+        assert_equal true, @job.completed?
+        assert_equal 0, count
+        assert_equal nil, RocketJob::Job.where(id: @job.id).first
       end
 
       should 'retry on exception' do
