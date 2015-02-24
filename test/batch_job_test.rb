@@ -1,5 +1,5 @@
 require_relative 'test_helper'
-require_relative 'workers/multi_record'
+require_relative 'workers/batch_job'
 
 # Unit Test for RocketJob::BatchJob
 class MultiRecordJobTest < Minitest::Test
@@ -459,10 +459,10 @@ class MultiRecordJobTest < Minitest::Test
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_batch_job', RocketJob::BatchJob.collection.db.name
+        assert_equal 'test_rocket_job', RocketJob::BatchJob.collection.db.name
         job = RocketJob::BatchJob.new
-        assert_equal 'test_batch_job_work', job.input_collection.db.name
-        assert_equal 'test_batch_job_work', job.output_collection.db.name
+        assert_equal 'test_rocket_job_work', job.input_collection.db.name
+        assert_equal 'test_rocket_job_work', job.output_collection.db.name
       end
     end
 
