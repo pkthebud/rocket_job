@@ -42,13 +42,12 @@ module RocketJob
 
     # Breaks the :running state up into multiple sub-states:
     #   :running -> :before -> :processing -> :after -> :complete
-    # TODO Validate values and can only be set when :state == :running
-    key :sub_state,               Symbol, default: :before
+    key :sub_state,               Symbol
 
     after_destroy :cleanup!
 
     validates_presence_of :record_count, :compress_delimiter,
-      :slice_size, :record_count, :sub_state
+      :slice_size, :record_count
     # :compress, :encrypt
 
     # Use a separate Mongo connection for the Records and Results
@@ -129,15 +128,13 @@ module RocketJob
         worker                 = self.klass.constantize.new
         worker.rocket_job      = self
         # If this is the first worker to pickup this job
-        if sub_state == :before
+        if before_processing?
           # before_perform
           call_method(worker, :before)
-          self.sub_state = :processing
-          save!
-        elsif (sub_state == :after) && failure_count > 0
+          processing!
+        elsif after_processing?
           # previous after_perform failed
           call_method(worker, :after)
-          self.sub_state = :complete
           complete!
           return 0
         end
@@ -164,13 +161,13 @@ module RocketJob
       end
     end
 
-    # Once a job is running and in sub_state :before the worker can pre-process
+    # While a job is still in the before_processing state the worker can pre-process
     # specific portions of the entire job and stick those results in the parameters
     # for other workers to use in their processing.
     # For example a CSV file where the first line in the first slice contains
     # the header columns
     def before_work(slice_id, &block)
-      raise 'Job must be running and in before sub_state when calling #before_work' unless running? && (sub_state == :before)
+      raise 'Job must be running and in :before sub_state when calling #before_work' unless before_processing?
       processed_record_count = 0
       worker                 = self.klass.constantize.new
       worker.rocket_job       = self
@@ -272,9 +269,9 @@ module RocketJob
       # Upload the file into Mongo
       case format
       when :zip
-        RocketJob::Reader::Zip.input_file(file_name) { |io, source| job.input_stream(io) }
+        RocketJob::Reader::Zip.input_file(file_name) { |io, source| input_stream(io) }
       when :text
-        File.open(file_name, 'rt') { |io| job.input_stream(io) }
+        File.open(file_name, 'rt') { |io| input_stream(io) }
       else
         raise ArgumentError.new("Invalid RocketJob#input_file format: #{format.inspect}")
       end
@@ -539,6 +536,31 @@ module RocketJob
 
     protected
 
+    def before_processing?
+      running? && (sub_state == :before)
+    end
+
+    def after_processing?
+      running? && (sub_state == :after)
+    end
+
+    # Mark job as available for processing by other workers
+    def processing!
+      self.sub_state = :processing
+      save!
+    end
+
+    # Add sub_state to aasm events
+    def before_start
+      super
+      self.sub_state = :before unless self.sub_state
+    end
+
+    def before_complete
+      super
+      self.sub_state = nil
+    end
+
     # Checks for completion and runs after_perform if defined
     def check_completion(worker)
       return unless record_count && (input_collection.count == 0)
@@ -546,10 +568,10 @@ module RocketJob
       # and prevent other workers from also completing it
       if result = collection.update({ '_id' => id, 'state' => :running, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
         if (result['nModified'] || result['n']).to_i > 0
+          # Also update the in-memory value
           self.sub_state = :after
           # after_perform
           call_method(worker, :after)
-          self.sub_state = :complete
           complete!
         end
       else
@@ -565,11 +587,11 @@ module RocketJob
       slice_id            = header['_id']
       record_number       = 0
       logger.tagged(slice_id) do
-        slice = "#{worker.class.name}##{self.method}, slice:#{slice_id}"
+        slice = "#{worker.class.name}##{self.perform_method}, slice:#{slice_id}"
         logger.info "Start #{slice}"
         output_slice = logger.benchmark_info(
           "Completed #{slice}",
-          metric:             "rocket_job/#{worker.class.name.underscore}/#{self.method}",
+          metric:             "rocket_job/#{worker.class.name.underscore}/#{self.perform_method}",
           log_exception:      :full,
           on_exception_level: :error,
           silence:            self.log_level
@@ -581,7 +603,7 @@ module RocketJob
               block.call(*self.arguments, record, header)
             else
               # perform
-              worker.send(self.method, *self.arguments, record, header)
+              worker.send(self.perform_method, *self.arguments, record, header)
             end
           end
         end

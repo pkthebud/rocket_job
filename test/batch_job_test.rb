@@ -16,21 +16,26 @@ class BatchJobTest < Minitest::Test
         'that we can delimit',
         'as necessary'
       ]
-      @job = RocketJob::BatchJob.create(
-        description:         @description,
-        collect_output:      true,
-        repeatable:          true,
-        klass:               'Workers::BatchJob',
-        destroy_on_complete: false
-      )
+      @description = 'Hello World'
     end
 
     teardown do
       @job.destroy if @job && !@job.new_record?
     end
 
+    context '.rocket_job' do
+      should 'set defaults' do
+        @job = Workers::BatchJob.perform_later
+        assert_equal @description, @job.description
+        assert_equal true, @job.collect_output
+        assert_equal true, @job.repeatable
+        assert_equal false, @job.destroy_on_complete
+      end
+    end
+
     context '#status' do
       should 'return status for a queued job' do
+        @job = Workers::BatchJob.perform_later
         assert_equal true, @job.queued?
         h = @job.status
         assert_equal :queued,      h[:state]
@@ -42,6 +47,7 @@ class BatchJobTest < Minitest::Test
 
     context '#input_slice' do
       should 'write slices' do
+        @job = Workers::BatchJob.perform_later
         @lines.each { |line| @job.input_slice([line]) }
 
         assert_equal @lines.size, @job.record_count
@@ -51,20 +57,29 @@ class BatchJobTest < Minitest::Test
 
     context '#input_records' do
       should 'support slice size of 1' do
-        @job.slice_size = 1
         lines = @lines.dup
-        result = @job.input_records { lines.shift }
-        assert_equal (1..@lines.size), result
+        count = 0
+        @job = Workers::BatchJob.perform_later do |job|
+          # Override default slice size
+          job.slice_size = 1
+          count = job.input_records { lines.shift }
+        end
+        assert_equal (1..@lines.size), count
 
         assert_equal @lines.size, @job.record_count
         assert_equal @lines.size, @job.input_collection.count
       end
 
       should 'support slice size of 2' do
-        @job.slice_size = 2
         lines = @lines.dup
-        result = @job.input_records { lines.shift }
-        assert_equal (1..@lines.size), result
+        count = 0
+        @job = Workers::BatchJob.perform_later do |job|
+          # Override default slice size
+          job.slice_size = 2
+          count = job.input_records { lines.shift }
+        end
+        lines = @lines.dup
+        assert_equal (1..@lines.size), count
         slice_count = (0.5 + @lines.size.to_f / 2).to_i
 
         assert_equal @lines.size, @job.record_count
@@ -74,9 +89,11 @@ class BatchJobTest < Minitest::Test
 
     context '#work' do
       should 'read all records' do
-        assert_equal 0, @job.record_count
-        @job.slice_size = 1
-        @lines.each { |row| @job.input_slice([row]) }
+        @job = Workers::BatchJob.perform_later do |job|
+          assert_equal 0, job.record_count
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -93,14 +110,17 @@ class BatchJobTest < Minitest::Test
         assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
         assert_equal @lines.size, count
+        assert_equal @lines.size, @job.slices_processed
         RocketJob::Job.find(@job.id)
       end
 
       should 'destroy on completion' do
-        @job.destroy_on_complete = true
-        assert_equal 0, @job.record_count
-        @job.slice_size = 1
-        @lines.each { |row| @job.input_slice([row]) }
+        @job = Workers::BatchJob.perform_later do |job|
+          assert_equal 0, job.record_count
+          job.destroy_on_complete = true
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -115,14 +135,16 @@ class BatchJobTest < Minitest::Test
         end
         assert_equal 0, @job.slices_failed
         assert_equal true, @job.completed?
+        assert_equal 0, @job.slices_processed
         assert_equal 0, count
         assert_equal nil, RocketJob::Job.where(id: @job.id).first
       end
 
       should 'retry on exception' do
-        @job.method = :oh_no
-        @job.slice_size = 1
-        @lines.each { |line| @job.input_slice([line]) }
+        @job = Workers::BatchJob.later(:oh_no) do |job|
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -147,7 +169,7 @@ class BatchJobTest < Minitest::Test
         @job.requeue
 
         # Re-process the failed jobs
-        @job.method = :perform
+        @job.perform_method = :perform
         @job.work(@server)
         failures = []
         @job.each_failed_record { |r, h| failures << { header: h, record: r } }
@@ -155,17 +177,16 @@ class BatchJobTest < Minitest::Test
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
-        assert_equal :complete, @job.sub_state
+        assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?
       end
 
       should 'call before_event' do
-        @job.method = :event
         named_parameters = { 'counter' => 23 }
-        @job.arguments << named_parameters
-        assert_equal 0, @job.record_count
-        @job.slice_size = 1
-        @lines.each { |row| @job.input_slice([row]) }
+        @job = Workers::BatchJob.later(:event, named_parameters) do |job|
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         @job.reload
@@ -174,7 +195,7 @@ class BatchJobTest < Minitest::Test
 
         @job.work(@server)
         assert_equal named_parameters.merge('before_event' => true, 'after_event' => true), @job.arguments.first
-        assert_equal :complete, @job.sub_state
+        assert_equal nil, @job.sub_state
 
         failures = []
         @job.each_failed_record { |r, h| failures << { header: h, record: r } }
@@ -186,9 +207,10 @@ class BatchJobTest < Minitest::Test
       end
 
       should 'retry after an after_perform exception' do
-        @job.method = :able
-        @job.slice_size = 1
-        @lines.each { |line| @job.input_slice([line]) }
+        @job = Workers::BatchJob.later(:able) do |job|
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -216,13 +238,14 @@ class BatchJobTest < Minitest::Test
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
         assert_equal true, @job.completed?, @job.state
-        assert_equal :complete, @job.sub_state
+        assert_equal nil, @job.sub_state
       end
 
       should 'retry after a before_perform exception' do
-        @job.method = :probable
-        @job.slice_size = 1
-        @lines.each { |line| @job.input_slice([line]) }
+        @job = Workers::BatchJob.later(:probable) do |job|
+          job.slice_size = 1
+          @lines.each { |row| job.input_slice([row]) }
+        end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
@@ -247,13 +270,20 @@ class BatchJobTest < Minitest::Test
         assert_equal @lines.size, @job.slices_processed
         assert_equal 0, @job.slices_queued
         assert_equal 0, @job.slices_active
-        assert_equal :complete, @job.sub_state
+        assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
       end
 
     end
 
     context '#input_stream' do
+      setup do
+        @job = Workers::BatchJob.perform_later do |job|
+          job.destroy_on_complete = true
+          job.slice_size = 100
+        end
+      end
+
       should 'handle empty streams' do
         str = ""
         stream = StringIO.new(str)
@@ -426,6 +456,10 @@ class BatchJobTest < Minitest::Test
     end
 
     context '#output_stream' do
+      setup do
+        @job = Workers::BatchJob.perform_later
+      end
+
       should 'handle no results' do
         stream = StringIO.new('')
         @job.output_stream(stream)
@@ -435,11 +469,13 @@ class BatchJobTest < Minitest::Test
       should 'handle 1 result' do
         @job.input_slice([ @lines.first ])
         @job.start!
-        @job.work(@server)
+        count = @job.work(@server)
+        assert_equal 1, count
         failures = []
         @job.each_failed_record { |r, h| failures << { header: h, record: r } }
         assert_equal 0, @job.slices_failed, failures
         assert_equal true, @job.completed?
+
         stream = StringIO.new('')
         @job.output_stream(stream)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
@@ -503,7 +539,7 @@ class BatchJobTest < Minitest::Test
         failures = []
         @job.each_failed_record { |r, h| failures << { header: h, record: r } }
         assert_equal 0, @job.slices_failed, failures
-        assert_equal :complete, @job.sub_state
+        assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.output_stream(stream)

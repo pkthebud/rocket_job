@@ -23,7 +23,7 @@ module RocketJob
       def later(method, *args, &block)
         job = rocket_job_class.new(
           klass:     name,
-          method:    method.to_sym,
+          perform_method:    method.to_sym,
           arguments: args
         )
         job.instance_eval(&@rocket_job_defaults) if @rocket_job_defaults
