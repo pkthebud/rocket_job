@@ -1,5 +1,6 @@
 # encoding: UTF-8
 require 'zlib'
+require 'symmetric-encryption'
 module RocketJob
   class BatchJob < Job
     # SyncAttr v2
