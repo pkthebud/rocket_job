@@ -42,33 +42,28 @@ module RocketJob
     #
     class PerformanceJob
       include RocketJob::Worker
+
+      # Define the job's default attributes
+      rocket_job(RocketJob::BatchJob) do
+        self.destroy_on_complete = false
+        self.encrypt             = true
+        self.compress            = true
+        self.description         = "Performance Test"
+        self.slice_size          = 100
+        self.collect_output      = true
+        # Higher priority in case something else is also running
+        self.priority            = 5
+      end
+
       # # Load a file for processing by the cluster of workers
       # filename = 'large_file.zip'
       # job = RocketJob::Jobs::PerformanceJob.upload(file_name, :perform)
       #
+      # job = RocketJob::Jobs::PerformanceJob.later(:perform) { |job| job.input_file('myfile.zip') }
+      #
       def self.upload(file_name, method = :perform)
         start_time = Time.now
-        rocket_job = later(method) do |job|
-          job.destroy_on_complete = false
-          job.encrypt             = true
-          job.compress            = true
-          job.description         = "Performance Test"
-          job.slice_size          = 100
-          job.collect_output      = true
-          # Higher priority in case something else is also running
-          job.priority            = 5
-
-          # Upload the file into Mongo
-          if file_name.ends_with?('.zip')
-            RocketJob::Reader::Zip.input_file(file_name) do |io, source|
-              job.input_stream(io)
-            end
-          else
-            File.open(file_name, 'rt') do |io|
-              job.input_stream(io)
-            end
-          end
-        end
+        rocket_job = later(method) { |job| job.input_file(file_name) }
         puts "Loaded #{file_name} in #{Time.now - start_time} seconds"
         rocket_job
       end

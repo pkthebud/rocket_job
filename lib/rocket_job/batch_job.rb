@@ -247,6 +247,38 @@ module RocketJob
       record_count > before_count ? (before_count + 1 .. record_count) : (before_count .. record_count)
     end
 
+    # Load a file for processing into this job
+    # Parameters
+    #   file_name
+    #     Full path and file name to stream into the job
+    #
+    #   Format
+    #     :text
+    #       Text file
+    #     :zip
+    #       Zip file
+    #     :auto
+    #       Auto-detect. If file_name ends with '.zip' then zip is assumed
+    #
+    # Note:
+    #   The Zip file must contain only one file, the first file found will be
+    #   loaded into the job
+    def input_file(file_name, format=:auto)
+      if format == :auto
+        format = file_name.ends_with?('.zip') ? :zip : :text
+      end
+
+      # Upload the file into Mongo
+      case format
+      when :zip
+        RocketJob::Reader::Zip.input_file(file_name) { |io, source| job.input_stream(io) }
+      when :text
+        File.open(file_name, 'rt') { |io| job.input_stream(io) }
+      else
+        raise ArgumentError.new("Invalid RocketJob#input_file format: #{format.inspect}")
+      end
+    end
+
     # Load records for processing from the supplied stream
     # All data read from the stream is converted into UTF-8
     # before being persisted.

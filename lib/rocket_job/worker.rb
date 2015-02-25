@@ -10,27 +10,24 @@ module RocketJob
   module Worker
     def self.included(base)
       base.extend(ClassMethods)
-      base.send(:include, SemanticLogger::Loggable)
-      base.send(:attr_accessor, :rocket_job)
+      base.class_eval do
+        include SemanticLogger::Loggable
+        attr_accessor :rocket_job
+        @rocket_job_class    = RocketJob::Job
+        @rocket_job_defaults = nil
+      end
     end
 
     module ClassMethods
+      # Call a specific method as a batch worker
       def later(method, *args, &block)
-        job = if block
-          j = BatchJob.new(
-            klass:     name,
-            method:    method.to_sym,
-            arguments: args
-          )
-          block.call(j)
-          j
-        else
-          Job.new(
-            klass:     name,
-            method:    method.to_sym,
-            arguments: args
-          )
-        end
+        job = rocket_job_class.new(
+          klass:     name,
+          method:    method.to_sym,
+          arguments: args
+        )
+        job.instance_eval(&@rocket_job_defaults) if @rocket_job_defaults
+        block.call(job) if block
         if RocketJob::Config.test_mode
           job.start
           job.work
@@ -40,16 +37,23 @@ module RocketJob
         job
       end
 
+      # Method to be performed later
       def perform_later(*args, &block)
         later(:perform, *args, &block)
       end
 
-    end
+      # Define job defaults
+      def rocket_job(job_class=RocketJob::Job, &block)
+        puts "rocket job for class: #{job_class.name}"
+        @rocket_job_class    = job_class
+        @rocket_job_defaults = block
+        self
+      end
 
-    # Method that must be implemented to process the job
-    def self.perform(*args)
-      raise NotImplementedError.new('Must implement worker method #perform')
+      # Returns the job class
+      def rocket_job_class
+        @rocket_job_class
+      end
     end
-
   end
 end

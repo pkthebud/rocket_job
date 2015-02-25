@@ -3,6 +3,14 @@ module Workers
   class BatchJob
     include RocketJob::Worker
 
+    # Job Defaults
+    rocket_job(RocketJob::BatchJob) do
+      self.description         = 'Hello World'
+      self.collect_output      = true
+      self.repeatable          = true
+      self.destroy_on_complete = false
+    end
+
     def perform(record, header)
       record
     end
