@@ -19,8 +19,24 @@ module RocketJob
     end
 
     module ClassMethods
-      # Call a specific method as a batch worker
+      # Call a specific method as a rocket job worker
+      # The job is immediately enqueued for processing by a worker
+      # once the block has returned
       def later(method, *args, &block)
+        job = build(method, *args, &block)
+        job.save! unless RocketJob::Config.test_mode
+        job
+      end
+
+      # Build a Rocket Job instance that can be used to call a specific
+      # method as a rocket job worker
+      #
+      # Note:
+      #  - #save! must be called on the return job instance if it needs to be
+      #    queued for processing.
+      #  - If data is uploaded into the job instance before saving, and is then
+      #    discarded, call #cleanup! to clear out any partially uploaded data
+      def build(method, *args, &block)
         job = rocket_job_class.new(
           klass:     name,
           perform_method:    method.to_sym,
@@ -31,8 +47,6 @@ module RocketJob
         if RocketJob::Config.test_mode
           job.start
           job.work
-        else
-          job.save!
         end
         job
       end
@@ -42,9 +56,13 @@ module RocketJob
         later(:perform, *args, &block)
       end
 
+      # Method to be performed later
+      def perform_build(*args, &block)
+        build(:perform, *args, &block)
+      end
+
       # Define job defaults
       def rocket_job(job_class=RocketJob::Job, &block)
-        puts "rocket job for class: #{job_class.name}"
         @rocket_job_class    = job_class
         @rocket_job_defaults = block
         self

@@ -27,7 +27,7 @@ class BatchJobTest < Minitest::Test
       should 'set defaults' do
         @job = Workers::BatchJob.perform_later
         assert_equal @description, @job.description
-        assert_equal true, @job.collect_output
+        assert_equal true, @job.collect_output?
         assert_equal true, @job.repeatable
         assert_equal false, @job.destroy_on_complete
       end
@@ -45,29 +45,34 @@ class BatchJobTest < Minitest::Test
       end
     end
 
-    context '#input_slice' do
+    context '#write_slice' do
       should 'write slices' do
         @job = Workers::BatchJob.perform_later
-        @lines.each { |line| @job.input_slice([line]) }
+        @lines.each { |line| @job.upload_slice([line]) }
 
         assert_equal @lines.size, @job.record_count
-        assert_equal @lines.size, @job.input_collection.count
+        assert_equal @lines.size, @job.input.total_slices
+        assert_equal @lines.size, @job.input.queued_slices
+        assert_equal 0,           @job.input.active_slices
+        assert_equal 0,           @job.input.failed_slices
       end
     end
 
-    context '#input_records' do
+    context '#write_records' do
       should 'support slice size of 1' do
         lines = @lines.dup
         count = 0
         @job = Workers::BatchJob.perform_later do |job|
           # Override default slice size
           job.slice_size = 1
-          count = job.input_records { lines.shift }
+          count = job.upload_records { lines.shift }
         end
-        assert_equal (1..@lines.size), count
-
+        assert_equal @lines.size, count
         assert_equal @lines.size, @job.record_count
-        assert_equal @lines.size, @job.input_collection.count
+        assert_equal @lines.size, @job.input.total_slices
+        assert_equal @lines.size, @job.input.queued_slices
+        assert_equal 0,           @job.input.active_slices
+        assert_equal 0,           @job.input.failed_slices
       end
 
       should 'support slice size of 2' do
@@ -76,14 +81,16 @@ class BatchJobTest < Minitest::Test
         @job = Workers::BatchJob.perform_later do |job|
           # Override default slice size
           job.slice_size = 2
-          count = job.input_records { lines.shift }
+          count = job.upload_records { lines.shift }
         end
-        lines = @lines.dup
-        assert_equal (1..@lines.size), count
         slice_count = (0.5 + @lines.size.to_f / 2).to_i
 
+        assert_equal @lines.size, count
         assert_equal @lines.size, @job.record_count
-        assert_equal slice_count, @job.input_collection.count
+        assert_equal slice_count, @job.input.total_slices
+        assert_equal slice_count, @job.input.queued_slices
+        assert_equal 0,           @job.input.active_slices
+        assert_equal 0,           @job.input.failed_slices
       end
     end
 
@@ -91,26 +98,36 @@ class BatchJobTest < Minitest::Test
       should 'read all records' do
         @job = Workers::BatchJob.perform_later do |job|
           assert_equal 0, job.record_count
+          # slice_size has no effect since it calling #write_slice directly
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |record| job.upload_slice([record]) }
         end
         @job.start!
 
         assert_equal @lines.size, @job.record_count
+        assert_equal @lines.size, @job.input.total_slices
+        assert_equal @lines.size, @job.input.queued_slices
+        assert_equal 0,           @job.input.active_slices
+        assert_equal 0,           @job.input.failed_slices
 
         count = 0
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        @job.each_output_record do |record|
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        @job.output.each_record do |record|
           assert_equal @lines[count], record
           count += 1
         end
-        assert_equal 0, @job.slices_failed
-        assert_equal true, @job.completed?
+
         assert_equal @lines.size, count
-        assert_equal @lines.size, @job.slices_processed
+        assert_equal @lines.size, @job.record_count
+        assert_equal 0,           @job.input.total_slices
+        assert_equal 0,           @job.input.queued_slices
+        assert_equal 0,           @job.input.active_slices
+        assert_equal 0,           @job.input.failed_slices
+        assert_equal true, @job.completed?
+        assert_equal @lines.size, @job.output.total_slices
         RocketJob::Job.find(@job.id)
       end
 
@@ -119,7 +136,7 @@ class BatchJobTest < Minitest::Test
           assert_equal 0, job.record_count
           job.destroy_on_complete = true
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |row| job.upload_slice([row]) }
         end
         @job.start!
 
@@ -128,14 +145,14 @@ class BatchJobTest < Minitest::Test
         count = 0
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        @job.each_output_record do |record|
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        @job.output.each_record do |record|
           count += 1
         end
-        assert_equal 0, @job.slices_failed
+        assert_equal 0, @job.input.failed_slices
         assert_equal true, @job.completed?
-        assert_equal 0, @job.slices_processed
+        assert_equal 0, @job.output.total_slices
         assert_equal 0, count
         assert_equal nil, RocketJob::Job.where(id: @job.id).first
       end
@@ -143,7 +160,7 @@ class BatchJobTest < Minitest::Test
       should 'retry on exception' do
         @job = Workers::BatchJob.later(:oh_no) do |job|
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |row| job.upload_slice([row]) }
         end
         @job.start!
 
@@ -151,32 +168,32 @@ class BatchJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work(@server)
-        assert_equal @lines.size, @job.slices_failed
-        assert_equal 0, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        assert_equal @lines.size, @job.input.failed_slices
+        assert_equal 0, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal false, @job.completed?
 
         # Should not process failed jobs
         @job.work(@server)
-        assert_equal @lines.size, @job.slices_failed
-        assert_equal 0, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        assert_equal @lines.size, @job.input.failed_slices
+        assert_equal 0, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal false, @job.completed?
 
         # Make records available for processing again
-        @job.requeue
+        @job.input.requeue_failed_slices
 
         # Re-process the failed jobs
         @job.perform_method = :perform
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        assert_equal @lines.size, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal @lines.size, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?
       end
@@ -185,7 +202,7 @@ class BatchJobTest < Minitest::Test
         named_parameters = { 'counter' => 23 }
         @job = Workers::BatchJob.later(:event, named_parameters) do |job|
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |row| job.upload_slice([row]) }
         end
         @job.start!
 
@@ -198,18 +215,18 @@ class BatchJobTest < Minitest::Test
         assert_equal nil, @job.sub_state
 
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        assert_equal @lines.size, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal @lines.size, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal true, @job.completed?
       end
 
       should 'retry after an after_perform exception' do
         @job = Workers::BatchJob.later(:able) do |job|
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |row| job.upload_slice([row]) }
         end
         @job.start!
 
@@ -218,11 +235,11 @@ class BatchJobTest < Minitest::Test
         # New jobs should fail
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed
-        assert_equal @lines.size, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices
+        assert_equal @lines.size, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal true, @job.failed?
         assert_equal :after, @job.sub_state
 
@@ -232,11 +249,11 @@ class BatchJobTest < Minitest::Test
         # Re-process the failed job
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        assert_equal @lines.size, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal @lines.size, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal true, @job.completed?, @job.state
         assert_equal nil, @job.sub_state
       end
@@ -244,7 +261,7 @@ class BatchJobTest < Minitest::Test
       should 'retry after a before_perform exception' do
         @job = Workers::BatchJob.later(:probable) do |job|
           job.slice_size = 1
-          @lines.each { |row| job.input_slice([row]) }
+          @lines.each { |row| job.upload_slice([row]) }
         end
         @job.start!
 
@@ -252,10 +269,10 @@ class BatchJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work(@server)
-        assert_equal 0, @job.slices_failed
-        assert_equal 0, @job.slices_processed
-        assert_equal @lines.size, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        assert_equal 0, @job.input.failed_slices
+        assert_equal 0, @job.output.total_slices
+        assert_equal @lines.size, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal true, @job.failed?
         assert_equal :before, @job.sub_state
 
@@ -265,18 +282,18 @@ class BatchJobTest < Minitest::Test
         # Re-process the failed job
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
-        assert_equal @lines.size, @job.slices_processed
-        assert_equal 0, @job.slices_queued
-        assert_equal 0, @job.slices_active
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal @lines.size, @job.output.total_slices
+        assert_equal 0, @job.input.queued_slices
+        assert_equal 0, @job.input.active_slices
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
       end
 
     end
 
-    context '#input_stream' do
+    context '#upload' do
       setup do
         @job = Workers::BatchJob.perform_later do |job|
           job.destroy_on_complete = true
@@ -287,16 +304,16 @@ class BatchJobTest < Minitest::Test
       should 'handle empty streams' do
         str = ""
         stream = StringIO.new(str)
-        @job.input_stream(stream)
-        assert_equal 0, @job.input_collection.count
+        @job.upload(stream)
+        assert_equal 0, @job.input.total_slices
       end
 
       should 'handle a stream consisting only of the delimiter' do
         str = "\n"
         stream = StringIO.new(str)
-        @job.input_stream(stream)
-        assert_equal 1, @job.input_collection.count
-        @job.each_input_slice do |record, header|
+        @job.upload(stream)
+        assert_equal 1, @job.input.total_slices
+        @job.input.each_slice do |record, header|
           assert_equal [''], record
         end
       end
@@ -304,9 +321,9 @@ class BatchJobTest < Minitest::Test
       should 'handle a linux stream' do
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.input_stream(stream)
-        assert_equal 1, @job.input_collection.count
-        @job.each_input_slice do |record, header|
+        @job.upload(stream)
+        assert_equal 1, @job.input.total_slices
+        @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -314,21 +331,21 @@ class BatchJobTest < Minitest::Test
       should 'handle a windows stream' do
         str = @lines.join("\r\n")
         stream = StringIO.new(str)
-        @job.input_stream(stream)
+        @job.upload(stream)
       end
 
       should 'handle a one line stream with a delimiter' do
         str = "hello\r\n"
         stream = StringIO.new(str)
-        @job.input_stream(stream)
+        @job.upload(stream)
       end
 
       should 'handle a one line stream with no delimiter' do
         str = "hello"
         stream = StringIO.new(str)
-        @job.input_stream(stream)
-        assert_equal 1, @job.input_collection.count
-        @job.each_input_slice do |record, header|
+        @job.upload(stream)
+        assert_equal 1, @job.input.total_slices
+        @job.input.each_slice do |record, header|
           assert_equal [str], record
         end
       end
@@ -337,9 +354,9 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\r\n")
         str << "\r\n"
         stream = StringIO.new(str)
-        @job.input_stream(stream)
-        assert_equal 1, @job.input_collection.count
-        @job.each_input_slice do |record, header|
+        @job.upload(stream)
+        assert_equal 1, @job.input.total_slices
+        @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -348,10 +365,10 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream)
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream)
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -361,9 +378,9 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = @lines.size
-        @job.input_stream(stream)
-        assert_equal 1, @job.input_collection.count, @job.input_collection.find.to_a
-        @job.each_input_slice do |record, header|
+        @job.upload(stream)
+        assert_equal 1, @job.input.total_slices, @job.input.collection.find.to_a
+        @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
       end
@@ -372,10 +389,10 @@ class BatchJobTest < Minitest::Test
         str = @lines.join('$')
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream, delimiter: '$')
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream, delimiter: '$')
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -386,10 +403,10 @@ class BatchJobTest < Minitest::Test
         str = @lines.join(delimiter)
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream, delimiter: delimiter)
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream, delimiter: delimiter)
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
@@ -401,17 +418,17 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream)
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream)
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the slice stored was actually compressed
-        @job.input_collection.find_one do |record|
-          assert_equal Zlib::Deflate.deflate(@lines.first), record['slice'].to_s, record.inspect
-        end
+        message = @job.input.collection.find.sort('_id').limit(1).first
+        slice   = message['slice'].to_s
+        assert_equal Zlib::Deflate.deflate(@lines.first), slice, Zlib::Inflate.inflate(slice)
       end
 
       should 'encrypt records' do
@@ -420,17 +437,17 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream)
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream)
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the slice stored was actually encrypted
-        @job.input_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=false), record['slice'].to_s, record.inspect
-        end
+        message = @job.input.collection.find.sort('_id').limit(1).first
+        slice   = message['slice'].to_s
+        assert_equal @lines.first, SymmetricEncryption.cipher.binary_decrypt(slice)
       end
 
       should 'compress and encrypt records' do
@@ -440,59 +457,59 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.input_stream(stream)
-        assert_equal @lines.size, @job.input_collection.count, @job.input_collection.find.to_a
+        @job.upload(stream)
+        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
-        @job.each_input_slice do |record, header|
+        @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
           index += 1
         end
         # Confirm that the slice stored was actually compressed & encrypted
-        @job.input_collection.find_one do |record|
-          assert_equal SymmetricEncryption.cipher.binary_encrypt(@lines.first, true, compress=true), record['slice'].to_s, record.inspect
-        end
+        message = @job.input.collection.find.sort('_id').limit(1).first
+        slice   = message['slice'].to_s
+        assert_equal @lines.first, SymmetricEncryption.cipher.binary_decrypt(slice)
       end
 
     end
 
-    context '#output_stream' do
+    context '#download' do
       setup do
         @job = Workers::BatchJob.perform_later
       end
 
       should 'handle no results' do
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal "", stream.string, stream.string.inspect
       end
 
       should 'handle 1 result' do
-        @job.input_slice([ @lines.first ])
+        @job.upload_slice([ @lines.first ])
         @job.start!
         count = @job.work(@server)
         assert_equal 1, count
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?
 
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
       end
 
       should 'handle many results' do
         @job.slice_size = 1
         slices = @lines.dup
-        @job.input_records { slices.shift }
+        @job.upload_records { slices.shift }
         @job.start!
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -500,15 +517,15 @@ class BatchJobTest < Minitest::Test
         @job.compress = true
         @job.slice_size = 1
         slices = @lines.dup
-        @job.input_records { slices.shift }
+        @job.upload_records { slices.shift }
         @job.start!
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -516,15 +533,15 @@ class BatchJobTest < Minitest::Test
         @job.encrypt = true
         @job.slice_size = 1
         slices = @lines.dup
-        @job.input_records { slices.shift }
+        @job.upload_records { slices.shift }
         @job.start!
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -533,16 +550,16 @@ class BatchJobTest < Minitest::Test
         @job.encrypt = true
         @job.slice_size = 1
         slices = @lines.dup
-        @job.input_records { slices.shift }
+        @job.upload_records { slices.shift }
         @job.start!
         @job.work(@server)
         failures = []
-        @job.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.slices_failed, failures
+        @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
+        assert_equal 0, @job.input.failed_slices, failures
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.output_stream(stream)
+        @job.download(stream)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -552,8 +569,8 @@ class BatchJobTest < Minitest::Test
       should 'support multiple databases' do
         assert_equal 'test_rocket_job', RocketJob::BatchJob.collection.db.name
         job = RocketJob::BatchJob.new
-        assert_equal 'test_rocket_job_work', job.input_collection.db.name
-        assert_equal 'test_rocket_job_work', job.output_collection.db.name
+        assert_equal 'test_rocket_job_work', job.input.collection.db.name
+        assert_equal 'test_rocket_job_work', job.output.collection.db.name
       end
     end
 
