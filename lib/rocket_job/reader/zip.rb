@@ -20,7 +20,7 @@ module RocketJob
         #   end
         #
         # Note: The stream currently only supports #read
-        def self.input_file(file_name, &block)
+        def self.read_file(file_name, &block)
           fin = Java::JavaIo::FileInputStream.new(file_name)
           zin = Java::JavaUtilZip::ZipInputStream.new(fin)
           entry = zin.get_next_entry
@@ -48,7 +48,7 @@ module RocketJob
         #   end
         #
         # Note: The stream currently only supports #read
-        def self.input_stream(input_stream, &block)
+        def self.read_stream(input_stream, &block)
           zin = Java::JavaUtilZip::ZipInputStream.new(input_stream.to_inputstream)
           entry = zin.get_next_entry
           block.call(zin.to_io,
@@ -67,7 +67,7 @@ module RocketJob
 
         # Read from a Zip file and stream into Job
         #  Sets job parameter 'csv_filename' to the name of the first file found in the zip
-        def self.input_file(file_name, &block)
+        def self.read_file(file_name, &block)
           ::Zip::File.open(file_name) do |zip_file|
             raise 'The zip archive did not have any files in it.' if zip_file.count == 0
             raise 'The zip archive has more than one file in it.' if zip_file.count != 1
@@ -79,7 +79,7 @@ module RocketJob
           end
         end
 
-        def self.input_stream(io, &block)
+        def self.read_stream(io, &block)
           zin = ::Zip::InputStream.new(io)
           entry = zin.get_next_entry
           block.call(zin,

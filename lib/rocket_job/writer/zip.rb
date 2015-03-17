@@ -24,7 +24,7 @@ module RocketJob
         #     io_stream.write("hello world\n")
         #     io_stream.write("and more\n")
         #   end
-        def self.output_file(zip_file_name, file_name, &block)
+        def self.write_file(zip_file_name, file_name, &block)
           out = Java::JavaIo::FileOutputStream.new(zip_file_name)
           zout = Java::JavaUtilZip::ZipOutputStream.new(out)
           zout.put_next_entry(Java::JavaUtilZip::ZipEntry.new(file_name))
@@ -45,7 +45,7 @@ module RocketJob
           raise(exc)
         end
 
-        def self.output_file(zip_file_name, file_name, &block)
+        def self.write_file(zip_file_name, file_name, &block)
           zos = ::Zip::OutputStream.new(zip_file_name)
           zos.put_next_entry(file_name)
           block.call(zos)

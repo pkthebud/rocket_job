@@ -106,7 +106,7 @@ module RocketJob
         when :zip
           zip_filename = options.delete(:zip_filename) || 'file'
           if is_file_name
-            RocketJob::Writer::Zip.output_file(file_name_or_io, zip_filename, &writer)
+            RocketJob::Writer::Zip.write_file(file_name_or_io, zip_filename, &writer)
           else
             raise ArgumentError.new("Invalid RocketJob download format: :zip. Cannot stream using zip, can only write to a zip file, or use :gzip")
           end
