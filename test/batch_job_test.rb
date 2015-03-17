@@ -304,14 +304,14 @@ class BatchJobTest < Minitest::Test
       should 'handle empty streams' do
         str = ""
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 0, @job.input.total_slices
       end
 
       should 'handle a stream consisting only of the delimiter' do
         str = "\n"
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 1, @job.input.total_slices
         @job.input.each_slice do |record, header|
           assert_equal [''], record
@@ -321,7 +321,7 @@ class BatchJobTest < Minitest::Test
       should 'handle a linux stream' do
         str = @lines.join("\n")
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 1, @job.input.total_slices
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
@@ -331,19 +331,19 @@ class BatchJobTest < Minitest::Test
       should 'handle a windows stream' do
         str = @lines.join("\r\n")
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
       end
 
       should 'handle a one line stream with a delimiter' do
         str = "hello\r\n"
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
       end
 
       should 'handle a one line stream with no delimiter' do
         str = "hello"
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 1, @job.input.total_slices
         @job.input.each_slice do |record, header|
           assert_equal [str], record
@@ -354,7 +354,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\r\n")
         str << "\r\n"
         stream = StringIO.new(str)
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 1, @job.input.total_slices
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
@@ -365,7 +365,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -378,7 +378,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = @lines.size
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal 1, @job.input.total_slices, @job.input.collection.find.to_a
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
@@ -389,7 +389,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join('$')
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream, delimiter: '$')
+        @job.upload(stream, delimiter: '$', format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -403,7 +403,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join(delimiter)
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream, delimiter: delimiter)
+        @job.upload(stream, delimiter: delimiter, format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -418,7 +418,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -437,7 +437,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -457,7 +457,7 @@ class BatchJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.slice_size = 1
-        @job.upload(stream)
+        @job.upload(stream, format: :text)
         assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
@@ -479,7 +479,7 @@ class BatchJobTest < Minitest::Test
 
       should 'handle no results' do
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal "", stream.string, stream.string.inspect
       end
 
@@ -494,7 +494,7 @@ class BatchJobTest < Minitest::Test
         assert_equal true, @job.completed?
 
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal @lines.first + "\n", stream.string, stream.string.inspect
       end
 
@@ -509,7 +509,7 @@ class BatchJobTest < Minitest::Test
         assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -525,7 +525,7 @@ class BatchJobTest < Minitest::Test
         assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -541,7 +541,7 @@ class BatchJobTest < Minitest::Test
         assert_equal 0, @job.input.failed_slices, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 
@@ -559,7 +559,7 @@ class BatchJobTest < Minitest::Test
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
-        @job.download(stream)
+        @job.download(stream, format: :text)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
 

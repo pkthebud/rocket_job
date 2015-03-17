@@ -3,8 +3,9 @@ require 'symmetric-encryption'
 module RocketJob
   module Collection
     class Base
+      include SemanticLogger::Loggable
 
-      attr_accessor :encrypt, :compress, :slice_size, :compress_delimiter
+      attr_accessor :encrypt, :compress, :slice_size, :compress_delimiter, :job
       attr_reader :collection
 
       def initialize(job, name)
@@ -12,6 +13,7 @@ module RocketJob
         @compress           = job.compress
         @slice_size         = job.slice_size
         @compress_delimiter = job.compress_delimiter
+        @job                = job
         @collection         = Config.mongo_work_connection.db[name]
       end
 
@@ -80,6 +82,9 @@ module RocketJob
         [ slice, message ]
       end
 
+      def default_file_name
+        "#{job.klass_name.underscore}_#{job.id}"
+      end
     end
   end
 end

@@ -42,7 +42,7 @@ module RocketJob
           perform_method:    method.to_sym,
           arguments: args
         )
-        job.instance_eval(&@rocket_job_defaults) if @rocket_job_defaults
+        @rocket_job_defaults.call(job) if @rocket_job_defaults
         block.call(job) if block
         if RocketJob::Config.test_mode
           job.start

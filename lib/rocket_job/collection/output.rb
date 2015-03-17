@@ -3,8 +3,6 @@ require 'rocket_job/collection/base'
 module RocketJob
   module Collection
     class Output < Base
-      include SemanticLogger::Loggable
-
       attr_reader :collection
 
       # Output Collection for this job
@@ -12,15 +10,13 @@ module RocketJob
       #   job [RocketJob::Job]
       #     The job with which this output collection is associated
       #
-      #   counter [Integer]
-      #     When supplied, this counter can be used to create multiple output
-      #     collections for a single job.
-      #     Default: None
-      #
-      def initialize(job, counter=nil)
-        name = "rocket_job.outputs.#{job.id.to_s}"
-        name << ".#{counter}" if counter
-        super(job, name)
+      #   name [String]
+      #     The named output storage when multiple outputs are being generated
+      #     Default: None ( Uses the single default output collection for this job )
+      def initialize(job, name=nil)
+        collection_name = "rocket_job.outputs.#{job.id.to_s}"
+        collection_name << ".#{name}" if name
+        super(job, collection_name)
       end
 
       # Read output data and write it into the supplied filename or stream
@@ -38,6 +34,8 @@ module RocketJob
       #     format [Symbol]
       #       :text
       #         Text file
+      #       :gzip
+      #         GZip file
       #       :zip
       #         Zip file
       #       :auto
@@ -55,8 +53,8 @@ module RocketJob
       #       Default: 'file'
       #
       # Note:
-      #   - When zip format, the Zip file/stream must contain only one file, the first file found will be
-      #     loaded into the job
+      #   - Cannot stream into a Zip file since it has to rewind to the beginning
+      #     to update the header information after adding a file. Use :gzip
       #   - If an io stream is supplied, it is read until it returns nil
       #
       # Notes:
@@ -66,21 +64,32 @@ module RocketJob
       #
       # Example:
       #   # Load plain text records from a file
-      #   job.upload('hello.csv')
+      #   job.output.download('hello.csv')
       #
       # Example:
-      #   # Load from a Zip file:
-      #   job.upload('hello.zip')
-      def read(file_name_or_io, options={})
+      #   # Save to a Zip file:
+      #   job.output.download('hello.zip', zip_filename: 'my_file.csv')
+      #
+      # Example:
+      #   # Save to a stream:
+      #   job.output.download(io, format: :gzip)
+      #   # Internal filename defaults to: "#{job.klass_name.underscore}_#{job.id}"
+      def download(file_name_or_io, options={})
         is_file_name = file_name_or_io.is_a?(String)
         options      = options.dup
-        format       = options.delete(:format) || :text
+        format       = options.delete(:format) || :auto
         delimiter    = options.delete(:delimiter) || $/
         record_count = 0
 
         if format == :auto
-          raise ArgumentError.new("RocketJob Cannot use format :auto when uploading a stream") unless is_file_name
-          format = file_name_or_io.ends_with?('.zip') ? :zip : :text
+          raise ArgumentError.new("RocketJob Cannot use format :auto when downloading into a stream") unless is_file_name
+          format = if file_name_or_io.ends_with?('.zip')
+            :zip
+          elsif file_name_or_io.ends_with?('.gzip') || file_name_or_io.ends_with?('.gz')
+            :gzip
+          else
+            :text
+          end
         end
 
         # Common writer to write data from this collection to the supplied stream
@@ -99,7 +108,18 @@ module RocketJob
           if is_file_name
             RocketJob::Writer::Zip.output_file(file_name_or_io, zip_filename, &writer)
           else
-            RocketJob::Writer::Zip.output_stream(file_name_or_io, zip_filename, &writer)
+            raise ArgumentError.new("Invalid RocketJob download format: :zip. Cannot stream using zip, can only write to a zip file, or use :gzip")
+          end
+        when :gzip
+          if is_file_name
+            Zlib::GzipWriter.open(file_name_or_io, &writer)
+          else
+            begin
+              io = Zlib::GzipWriter.new(file_name_or_io)
+              writer.call(io)
+            ensure
+              io.close if io
+            end
           end
         when :text
           if is_file_name
@@ -117,7 +137,7 @@ module RocketJob
       # For one to one jobs where the output file record count matches the input
       # file record count, it is recommended to pass the _id supplied in the input
       # slice
-      def write_slice(slice, id=nil)
+      def upload_slice(slice, id=nil)
         begin
           collection.insert(build_message(slice, '_id' => id))
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc

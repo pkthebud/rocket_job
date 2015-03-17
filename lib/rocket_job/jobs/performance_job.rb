@@ -44,15 +44,15 @@ module RocketJob
       include RocketJob::Worker
 
       # Define the job's default attributes
-      rocket_job(RocketJob::BatchJob) do
-        self.destroy_on_complete = false
-        self.encrypt             = true
-        self.compress            = true
-        self.description         = "Performance Test"
-        self.slice_size          = 100
-        self.collect_output      = true
+      rocket_job(RocketJob::BatchJob) do |job|
+        job.destroy_on_complete = false
+        job.encrypt             = true
+        job.compress            = true
+        job.description         = "Performance Test"
+        job.slice_size          = 100
+        job.collect_output      = true
         # Higher priority in case something else is also running
-        self.priority            = 5
+        job.priority            = 5
       end
 
       # # Load a file for processing by the cluster of workers

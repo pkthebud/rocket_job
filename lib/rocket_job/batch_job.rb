@@ -45,28 +45,40 @@ module RocketJob
     end
 
     # Returns [RocketJob::Collection::Input] input collection for holding input slices
-    def input
-      @input ||= RocketJob::Collection::Input.new(self)
+    #
+    # Parameters:
+    #   name [String]
+    #     The named input source when multiple inputs are being processed
+    #     Default: None ( Uses the single default input collection for this job )
+    def input(name=nil)
+      @input ||= RocketJob::Collection::Input.new(self, name)
     end
 
     # Returns [RocketJob::Collection::Output] output collection for holding output slices
     # Returns nil if no output is being collected
-    def output
-      @output ||= RocketJob::Collection::Output.new(self)
+    #
+    # Parameters:
+    #   name [String]
+    #     The named output storage when multiple outputs are being generated
+    #     Default: None ( Uses the single default output collection for this job )
+    def output(name=nil)
+      @output ||= RocketJob::Collection::Output.new(self, name)
     end
 
     # Upload the supplied file_name or stream
     #
     # Updates the record_count after adding the records
     #
-    # See RocketJob::Collection::Input#write for complete parameters
+    # See RocketJob::Collection::Input#upload for complete parameters
     #
     # Returns [Integer] the number of records uploaded
     #
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def upload(file_name_or_io, options={})
-      self.record_count += input.write(file_name_or_io, options)
+      count = input.upload(file_name_or_io, options)
+      self.record_count += count
+      count
     end
 
     # Upload the supplied slices for processing by workers
@@ -86,7 +98,9 @@ module RocketJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def upload_slice(slice)
-      self.record_count += input.write_slice(slice)
+      count = input.upload_slice(slice)
+      self.record_count += count
+      count
     end
 
     # Upload each record returned by the supplied Block until it returns nil
@@ -104,19 +118,21 @@ module RocketJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def upload_records(&block)
-      self.record_count += input.write_records(&block)
+      count = input.upload_records(&block)
+      self.record_count += count
+      count
     end
 
     # Download the output data into the supplied file_name or stream
     #
-    # See RocketJob::Collection::Output#read for complete parameters
+    # See RocketJob::Collection::Output#download for complete parameters
     #
     # Returns [Integer] the number of records downloaded
     #
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def download(file_name_or_io, options={})
-      output.read(file_name_or_io, options)
+      output.download(file_name_or_io, options)
     end
 
     # Calls the supplied slice for each record available for processing
@@ -322,7 +338,7 @@ module RocketJob
         end
 
         # Ignore duplicates on insert into output.collection since it successfully completed previously
-        output.write_slice(output_slice, slice_id) if self.collect_output?
+        output.upload_slice(output_slice, slice_id) if self.collect_output?
 
         # On successful completion remove the slice from the input queue
         input.remove_slice(slice_id)

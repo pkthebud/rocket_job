@@ -3,24 +3,20 @@ require 'rocket_job/collection/base'
 module RocketJob
   module Collection
     class Input < Base
-      include SemanticLogger::Loggable
-
       # Input Collection for this job
       # Parameters
       #   job [RocketJob::Job]
       #     The job with which this input collection is associated
       #
-      #   counter [Integer]
-      #     When supplied, this counter can be used to create multiple input
-      #     collections for a single job.
-      #     Default: None
-      #
-      def initialize(job, counter=nil)
-        name = "rocket_job.inputs.#{job.id.to_s}"
-        name << ".#{counter}" if counter
-        super(job, name)
+      #   name [String]
+      #     The named input source when multiple inputs are being processed
+      #     Default: None ( Uses the single default input collection for this job )
+      def initialize(job, name=nil)
+        collection_name = "rocket_job.inputs.#{job.id.to_s}"
+        collection_name << ".#{name}" if name
+        super(job, collection_name)
         # Index for find_and_modify
-        collection.ensure_index('failed' => Mongo::ASCENDING, 'server' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING)
+        collection.ensure_index('failed' => Mongo::ASCENDING, 'server_name' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING)
       end
 
       # Load records for processing from the supplied filename or stream into this job.
@@ -38,6 +34,8 @@ module RocketJob
       #     format [Symbol]
       #       :text
       #         Text file
+      #       :gzip
+      #         GZip file
       #       :zip
       #         Zip file
       #       :auto
@@ -72,15 +70,15 @@ module RocketJob
       #
       # Example:
       #   # Load plain text records from a file
-      #   job.write('hello.csv')
+      #   job.input.upload('hello.csv')
       #
       # Example:
       #   # Load from a Zip file:
-      #   job.write('hello.zip')
-      def write(file_name_or_io, options={})
+      #   job.input.upload('hello.zip')
+      def upload(file_name_or_io, options={})
         is_file_name = file_name_or_io.is_a?(String)
         options      = options.dup
-        format       = options.delete(:format) || :text
+        format       = options.delete(:format) || :auto
 
         if format == :auto
           raise ArgumentError.new("RocketJob Cannot use format :auto when uploading a stream") unless is_file_name
@@ -89,19 +87,35 @@ module RocketJob
           raise 'Excel Spreadsheets are NOT supported' if ['.xls', '.xlsx'].include?(extension)
         end
 
+        # Common reader to read data from the supplied stream into this collection
+        reader = -> io do
+          upload_stream(io, options)
+        end
+
         # Upload the file into Mongo
         case format
         when :zip
           if is_file_name
-            RocketJob::Reader::Zip.load_file(file_name_or_io) { |io, source| upload_stream(io, options) }
+            RocketJob::Reader::Zip.load_file(file_name_or_io, &reader)
           else
-            RocketJob::Reader::Zip.load_stream(file_name_or_io) { |io, source| upload_stream(io, options) }
+            RocketJob::Reader::Zip.load_stream(file_name_or_io, &reader)
+          end
+        when :gzip
+          if is_file_name
+            Zlib::GzipReader.open(file_name_or_io, &reader)
+          else
+            begin
+              io = Zlib::GzipReader.new(file_name_or_io)
+              reader.call(io)
+            ensure
+              io.close if io
+            end
           end
         when :text
           if is_file_name
-            File.open(file_name_or_io, 'rt') { |io| upload_stream(io, options) }
+            File.open(file_name_or_io, 'rt', &reader)
           else
-            upload_stream(file_name_or_io, options)
+            reader.call(file_name_or_io)
           end
         else
           raise ArgumentError.new("Invalid RocketJob upload format: #{format.inspect}")
@@ -118,7 +132,7 @@ module RocketJob
       #     For example the following types are not supported: Date
       #
       # Note: The caller should honor `:slice_size`, the entire slice is loaded as-is.
-      def write_slice(slice)
+      def upload_slice(slice)
         collection.insert(build_message(slice))
         return slice.size
       end
@@ -132,7 +146,7 @@ module RocketJob
       #   The Block must return types that can be serialized to BSON.
       #   Valid Types: Hash | Array | String | Integer | Float | Symbol | Regexp | Time
       #   Invalid: Date, etc.
-      def write_records(&block)
+      def upload_records(&block)
         record_count = 0
         slice = []
         loop do
@@ -140,17 +154,17 @@ module RocketJob
           break if record.nil?
           slice << record
           if slice.size % slice_size == 0
-            record_count += write_slice(slice)
+            record_count += upload_slice(slice)
             slice = []
           end
         end
-        record_count += write_slice(slice) if slice.size > 0
+        record_count += upload_slice(slice) if slice.size > 0
         record_count
       end
 
       # Returns [Integer] the number of slices currently being processed
       def active_slices
-        collection.count(query: {'failed' => { '$exists' => false }, 'server' => { '$exists' => true } })
+        collection.count(query: {'failed' => { '$exists' => false }, 'server_name' => { '$exists' => true } })
       end
 
       # Returns [Integer] the number of slices that have failed so far for this job
@@ -162,7 +176,7 @@ module RocketJob
       # Returns [Integer] the number of slices queued for processing excluding
       # failed slices
       def queued_slices
-        collection.count(query: { 'failed' => { '$exists' => false }, 'server' => { '$exists' => false } })
+        collection.count(query: { 'failed' => { '$exists' => false }, 'server_name' => { '$exists' => false } })
       end
 
       # Removes the specified slice from the input collection
@@ -190,7 +204,7 @@ module RocketJob
         start_time = Time.now
         count      = 0
         selector = {
-          query:  { 'server' => { '$exists' => false }, 'failed' => { '$exists' => false } },
+          query:  { 'server_name' => { '$exists' => false }, 'failed' => { '$exists' => false } },
           update: { '$set' => { server: server.name, 'started_at' => Time.now } },
           sort:   '_id'
         }
@@ -227,13 +241,13 @@ module RocketJob
           end
         end
 
-        result = collection.update(selector, {'$unset' => { 'server' => true, 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
+        result = collection.update(selector, {'$unset' => { 'server_name' => true, 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
         result #['nModified'] || 0
       end
 
       # Requeue all slices for a server that is no longer available
       def requeue_incomplete_slices(server_name)
-        collection.update({ 'server' => server_name }, { '$unset' => { 'server' => true, 'started_at' => true } })
+        collection.update({ 'server_name' => server_name }, { '$unset' => { 'server_name' => true, 'started_at' => true } })
       end
 
       # Set exception information for a specific slice
@@ -242,13 +256,13 @@ module RocketJob
         collection.update(
           { '_id' => header['_id'] },
           {
-            '$unset' => { 'server' => true },
+            '$unset' => { 'server_name' => true },
             '$set' => {
               'exception' => {
                 'class'         => exc.class.to_s,
                 'message'       => exc.message,
                 'backtrace'     => exc.backtrace || [],
-                'server'        => header['server'],
+                'server_name'   => header['server_name'],
                 'record_number' => record_number
               },
               'failure_count' => header['failure_count'].to_i + 1,
@@ -301,7 +315,7 @@ module RocketJob
             end
           end
 
-          # Collect 'slice_size' lines and write to mongo as a single record
+          # Collect 'slice_size' lines and upload to mongo as a single record
           buffer.each_line(delimiter) do |line|
             if line.end_with?(delimiter)
               # Strip off delimiter when placing in record array
@@ -309,7 +323,7 @@ module RocketJob
               batch_count += 1
               if batch_count >= slice_size
                 # Write to Mongo
-                record_count += write_slice(slice)
+                record_count += upload_slice(slice)
                 batch_count = 0
                 slice.clear
               end
@@ -326,7 +340,7 @@ module RocketJob
         slice << buffer if buffer.size > 0
 
         # Write partial record to Mongo
-        record_count += write_slice(slice) if slice.size > 0
+        record_count += upload_slice(slice) if slice.size > 0
 
         record_count
       end
