@@ -1,10 +1,10 @@
 require 'rocket_job'
 module Workers
-  class BatchJob
+  class SlicedJob
     include RocketJob::Worker
 
     # Job Defaults
-    rocket_job(RocketJob::BatchJob) do |job|
+    rocket_job(RocketJob::SlicedJob) do |job|
       job.description         = 'Hello World'
       job.collect_output      = true
       job.repeatable          = true

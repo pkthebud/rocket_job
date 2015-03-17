@@ -1,9 +1,9 @@
 require_relative 'test_helper'
-require_relative 'workers/batch_job'
+require_relative 'workers/sliced_job'
 
-# Unit Test for RocketJob::BatchJob
-class BatchJobTest < Minitest::Test
-  context RocketJob::BatchJob do
+# Unit Test for RocketJob::SlicedJob
+class SlicedJobTest < Minitest::Test
+  context RocketJob::SlicedJob do
     setup do
       RocketJob::Job.destroy_all
       @server = RocketJob::Server.new
@@ -25,7 +25,7 @@ class BatchJobTest < Minitest::Test
 
     context '.rocket_job' do
       should 'set defaults' do
-        @job = Workers::BatchJob.perform_later
+        @job = Workers::SlicedJob.perform_later
         assert_equal @description, @job.description
         assert_equal true, @job.collect_output?
         assert_equal true, @job.repeatable
@@ -35,7 +35,7 @@ class BatchJobTest < Minitest::Test
 
     context '#status' do
       should 'return status for a queued job' do
-        @job = Workers::BatchJob.perform_later
+        @job = Workers::SlicedJob.perform_later
         assert_equal true, @job.queued?
         h = @job.status
         assert_equal :queued,      h[:state]
@@ -47,7 +47,7 @@ class BatchJobTest < Minitest::Test
 
     context '#write_slice' do
       should 'write slices' do
-        @job = Workers::BatchJob.perform_later
+        @job = Workers::SlicedJob.perform_later
         @lines.each { |line| @job.upload_slice([line]) }
 
         assert_equal @lines.size, @job.record_count
@@ -62,7 +62,7 @@ class BatchJobTest < Minitest::Test
       should 'support slice size of 1' do
         lines = @lines.dup
         count = 0
-        @job = Workers::BatchJob.perform_later do |job|
+        @job = Workers::SlicedJob.perform_later do |job|
           # Override default slice size
           job.slice_size = 1
           count = job.upload_records { lines.shift }
@@ -78,7 +78,7 @@ class BatchJobTest < Minitest::Test
       should 'support slice size of 2' do
         lines = @lines.dup
         count = 0
-        @job = Workers::BatchJob.perform_later do |job|
+        @job = Workers::SlicedJob.perform_later do |job|
           # Override default slice size
           job.slice_size = 2
           count = job.upload_records { lines.shift }
@@ -96,7 +96,7 @@ class BatchJobTest < Minitest::Test
 
     context '#work' do
       should 'read all records' do
-        @job = Workers::BatchJob.perform_later do |job|
+        @job = Workers::SlicedJob.perform_later do |job|
           assert_equal 0, job.record_count
           # slice_size has no effect since it calling #write_slice directly
           job.slice_size = 1
@@ -132,7 +132,7 @@ class BatchJobTest < Minitest::Test
       end
 
       should 'destroy on completion' do
-        @job = Workers::BatchJob.perform_later do |job|
+        @job = Workers::SlicedJob.perform_later do |job|
           assert_equal 0, job.record_count
           job.destroy_on_complete = true
           job.slice_size = 1
@@ -158,7 +158,7 @@ class BatchJobTest < Minitest::Test
       end
 
       should 'retry on exception' do
-        @job = Workers::BatchJob.later(:oh_no) do |job|
+        @job = Workers::SlicedJob.later(:oh_no) do |job|
           job.slice_size = 1
           @lines.each { |row| job.upload_slice([row]) }
         end
@@ -200,7 +200,7 @@ class BatchJobTest < Minitest::Test
 
       should 'call before_event' do
         named_parameters = { 'counter' => 23 }
-        @job = Workers::BatchJob.later(:event, named_parameters) do |job|
+        @job = Workers::SlicedJob.later(:event, named_parameters) do |job|
           job.slice_size = 1
           @lines.each { |row| job.upload_slice([row]) }
         end
@@ -224,7 +224,7 @@ class BatchJobTest < Minitest::Test
       end
 
       should 'retry after an after_perform exception' do
-        @job = Workers::BatchJob.later(:able) do |job|
+        @job = Workers::SlicedJob.later(:able) do |job|
           job.slice_size = 1
           @lines.each { |row| job.upload_slice([row]) }
         end
@@ -259,7 +259,7 @@ class BatchJobTest < Minitest::Test
       end
 
       should 'retry after a before_perform exception' do
-        @job = Workers::BatchJob.later(:probable) do |job|
+        @job = Workers::SlicedJob.later(:probable) do |job|
           job.slice_size = 1
           @lines.each { |row| job.upload_slice([row]) }
         end
@@ -295,7 +295,7 @@ class BatchJobTest < Minitest::Test
 
     context '#upload' do
       setup do
-        @job = Workers::BatchJob.perform_later do |job|
+        @job = Workers::SlicedJob.perform_later do |job|
           job.destroy_on_complete = true
           job.slice_size = 100
         end
@@ -474,7 +474,7 @@ class BatchJobTest < Minitest::Test
 
     context '#download' do
       setup do
-        @job = Workers::BatchJob.perform_later
+        @job = Workers::SlicedJob.perform_later
       end
 
       should 'handle no results' do
@@ -567,8 +567,8 @@ class BatchJobTest < Minitest::Test
 
     context '.config' do
       should 'support multiple databases' do
-        assert_equal 'test_rocket_job', RocketJob::BatchJob.collection.db.name
-        job = RocketJob::BatchJob.new
+        assert_equal 'test_rocket_job', RocketJob::SlicedJob.collection.db.name
+        job = RocketJob::SlicedJob.new
         assert_equal 'test_rocket_job_work', job.input.collection.db.name
         assert_equal 'test_rocket_job_work', job.output.collection.db.name
       end

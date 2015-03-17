@@ -282,7 +282,7 @@ module RocketJob
         options     = options.dup
         delimiter   = options.delete(:delimiter)
         buffer_size = options.delete(:buffer_size) || 65536
-        options.each { |option| raise ArgumentError.new("Unknown RocketJob::BatchJob#add_records option: #{option.inspect}") }
+        options.each { |option| raise ArgumentError.new("Unknown RocketJob::SlicedJob#add_records option: #{option.inspect}") }
 
         delimiter.force_encoding(UTF8_ENCODING) if delimiter
 

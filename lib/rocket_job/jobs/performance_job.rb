@@ -44,7 +44,7 @@ module RocketJob
       include RocketJob::Worker
 
       # Define the job's default attributes
-      rocket_job(RocketJob::BatchJob) do |job|
+      rocket_job(RocketJob::SlicedJob) do |job|
         job.destroy_on_complete = false
         job.encrypt             = true
         job.compress            = true

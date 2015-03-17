@@ -1,6 +1,6 @@
 # encoding: UTF-8
 module RocketJob
-  class BatchJob < Job
+  class SlicedJob < Job
     #
     # User definable attributes
     #
