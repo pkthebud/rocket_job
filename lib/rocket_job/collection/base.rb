@@ -61,6 +61,8 @@ module RocketJob
           # Without compression or encryption, store the array as is
           slice
         end
+        id              = header.delete(:id) || header.delete('id')
+        header['_id']   = id if id
         header['slice'] = data
         header
       end

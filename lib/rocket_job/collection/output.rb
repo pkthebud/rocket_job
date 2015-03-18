@@ -137,9 +137,9 @@ module RocketJob
       # For one to one jobs where the output file record count matches the input
       # file record count, it is recommended to pass the _id supplied in the input
       # slice
-      def upload_slice(slice, id=nil)
+      def upload_slice(slice, header={})
         begin
-          collection.insert(build_message(slice, '_id' => id))
+          collection.insert(build_message(slice, header))
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           raise(exc) unless exc.message.include?('E11000')

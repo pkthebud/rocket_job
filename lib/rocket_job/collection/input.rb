@@ -96,9 +96,9 @@ module RocketJob
         case format
         when :zip
           if is_file_name
-            RocketJob::Reader::Zip.read_file(file_name_or_io, &reader)
+            RocketJob::Reader::Zip.read_file(file_name_or_io) {|io, data|  upload_stream(io, options) }
           else
-            RocketJob::Reader::Zip.read_stream(file_name_or_io, &reader)
+            RocketJob::Reader::Zip.read_stream(file_name_or_io) {|io, data|  upload_stream(io, options) }
           end
         when :gzip
           if is_file_name

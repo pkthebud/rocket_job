@@ -338,7 +338,7 @@ module RocketJob
         end
 
         # Ignore duplicates on insert into output.collection since it successfully completed previously
-        output.upload_slice(output_slice, slice_id) if self.collect_output?
+        output.upload_slice(output_slice, id: slice_id) if self.collect_output?
 
         # On successful completion remove the slice from the input queue
         input.remove_slice(slice_id)
