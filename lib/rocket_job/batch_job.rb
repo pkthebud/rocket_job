@@ -325,9 +325,11 @@ module RocketJob
     #      job.input_stream(io)
     #    end
     def input_stream(io, options={})
-      options     = options.dup
-      delimiter   = options.delete(:delimiter)
-      buffer_size = options.delete(:buffer_size) || 65536
+      options             = options.dup
+      delimiter           = options.delete(:delimiter)
+      buffer_size         = options.delete(:buffer_size) || 65536
+      strip_non_printable = options.delete(:strip_non_printable)
+      strip_non_printable = true if strip_non_printable.nil?
       options.each { |option| raise ArgumentError.new("Unknown RocketJob::BatchJob#add_records option: #{option.inspect}") }
 
       delimiter.force_encoding(UTF8_ENCODING) if delimiter
@@ -339,13 +341,15 @@ module RocketJob
       buffer       = ''
       loop do
         partial = ''
-        # TODO Add optional data cleansing to strip out for example non-printable
-        # characters before converting to UTF-8
         chunk = io.read(buffer_size)
         unless chunk
           logger.trace { "#input_stream End of stream reached" }
           break
         end
+        # Strip out non-printable characters before converting to UTF-8
+        #      LC_ALL=UTF-8 tr -cd '[:print:]\n'
+        #    Or, string = line.scan(/[[:print:]]/).join
+        chunk = chunk.scan(/[[:print:]]|\r|\n/).join if strip_non_printable
         logger.trace { "#input_stream Read #{chunk.size} bytes" }
         buffer << chunk.force_encoding(UTF8_ENCODING)
         if delimiter.nil?
