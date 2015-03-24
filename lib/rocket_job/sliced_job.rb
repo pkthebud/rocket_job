@@ -242,16 +242,17 @@ module RocketJob
         h[:failed_slices]    = input.failed_slices
         h[:processed_slices] = processed
         h[:queued_slices]    = input.queued_slices
-        h[:total_records]    = record_count
+        h[:record_count]     = record_count
         h[:status]           = "Running for #{"%.2f" % h[:seconds]} seconds"
         h[:status]           << " processing #{record_count} records" if record_count > 0
         h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
         h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
-        h[:total_records]    = record_count
+        h[:record_count]     = record_count
       when queued?
         h[:queued_slices]    = input.total_slices
+        h[:record_count]     = record_count
       end
       h
     end
