@@ -485,6 +485,12 @@ class SlicedJobTest < Minitest::Test
         assert_equal "", stream.string, stream.string.inspect
       end
 
+      should 'raise exception when not completed' do
+        stream = StringIO.new('')
+        @job.start
+        assert_raises(::RuntimeError) { @job.download(stream, format: :text) }
+      end
+
       should 'handle 1 result' do
         @job.upload_slice([ @lines.first ])
         @job.start!

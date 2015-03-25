@@ -203,19 +203,17 @@ module RocketJob
       end
     end
 
-    # While a job is still in the before_processing state the worker can pre-process
-    # specific portions of the entire job and stick those results in the parameters
-    # for other workers to use in their processing.
-    # For example a CSV file where the first line in the first slice contains
-    # the header columns
+    # Prior to a job being made available for processing it can be processed one
+    # slice at a time.
     #
-    # TODO this needs a better solution
+    # For example, to extract the header row which would be in the first slice.
     #
-    def before_work(worker, slice_id, &block)
+    # Note: The slice will be removed from processing when this method completes
+    def work_first_slice(worker, &block)
       raise 'Job must be running and in :before sub_state when calling #before_work' unless before_processing?
       processed_record_count = 0
-      if message = input.collection.find_one('_id' => slice_id)
-        input_slice, header = parse_message(message)
+      if message = input.collection.find.sort('_id').limit(1).first
+        input_slice, header = input.parse_message(message)
         processed_record_count = input_slice.size
         process_slice(worker, input_slice, header, &block)
       end
