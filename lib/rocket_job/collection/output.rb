@@ -1,5 +1,7 @@
 # encoding: UTF-8
+require 'tempfile'
 require 'rocket_job/collection/base'
+
 module RocketJob
   module Collection
     class Output < Base
@@ -75,10 +77,13 @@ module RocketJob
       #   job.output.download(io, format: :gzip)
       #   # Internal filename defaults to: "#{job.klass_name.underscore}_#{job.id}"
       def download(file_name_or_io, options={})
+        raise "Cannot download incomplete job: #{job.id}. Currently in state: #{job.state}" unless job.completed?
+
         is_file_name = file_name_or_io.is_a?(String)
         options      = options.dup
         format       = options.delete(:format) || :auto
         delimiter    = options.delete(:delimiter) || $/
+        buffer_size  = options.delete(:buffer_size) || 65535
         record_count = 0
 
         if format == :auto
@@ -108,7 +113,18 @@ module RocketJob
           if is_file_name
             RocketJob::Writer::Zip.write_file(file_name_or_io, zip_filename, &writer)
           else
-            raise ArgumentError.new("Invalid RocketJob download format: :zip. Cannot stream using zip, can only write to a zip file, or use :gzip")
+            begin
+              t = Tempfile.new('rocket_job')
+              # Since ZIP cannot be streamed, download to a local file before streaming
+              RocketJob::Writer::Zip.write_file(t.to_path, zip_filename, &writer)
+              File.open(t.to_path, 'rb') do |file|
+                while block = file.read(buffer_size)
+                  file_name_or_io.write(block)
+                end
+              end
+            ensure
+              t.delete if t
+            end
           end
         when :gzip
           if is_file_name

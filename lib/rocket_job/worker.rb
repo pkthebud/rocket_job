@@ -24,7 +24,7 @@ module RocketJob
       # once the block has returned
       def later(method, *args, &block)
         job = build(method, *args, &block)
-        job.save! unless RocketJob::Config.test_mode
+        job.save!
         job
       end
 
@@ -38,16 +38,12 @@ module RocketJob
       #    discarded, call #cleanup! to clear out any partially uploaded data
       def build(method, *args, &block)
         job = rocket_job_class.new(
-          klass:     name,
-          perform_method:    method.to_sym,
+          klass:          name,
+          perform_method: method.to_sym,
           arguments: args
         )
         @rocket_job_defaults.call(job) if @rocket_job_defaults
         block.call(job) if block
-        if RocketJob::Config.test_mode
-          job.start
-          job.work
-        end
         job
       end
 
@@ -73,5 +69,11 @@ module RocketJob
         @rocket_job_class
       end
     end
+
+    def rocket_job_csv_parser
+      # TODO Change into an instance variable once CSV handling has been re-worked
+      RocketJob::Utility::CSVRow.new
+    end
+
   end
 end

@@ -11,8 +11,6 @@ module Workers
       job.destroy_on_complete = false
     end
 
-    end
-
     def perform(record, header)
       record
     end

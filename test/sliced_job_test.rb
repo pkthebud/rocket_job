@@ -479,6 +479,8 @@ class SlicedJobTest < Minitest::Test
 
       should 'handle no results' do
         stream = StringIO.new('')
+        @job.start
+        @job.complete
         @job.download(stream, format: :text)
         assert_equal "", stream.string, stream.string.inspect
       end
