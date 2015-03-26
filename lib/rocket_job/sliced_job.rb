@@ -346,6 +346,8 @@ module RocketJob
     rescue Exception => exc
       worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
       input.set_slice_exception(header, exc, record_number)
+      raise exc if RocketJob::Config.inline_mode
+      record_number
     end
 
   end

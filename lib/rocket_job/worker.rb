@@ -45,9 +45,10 @@ module RocketJob
         @rocket_job_defaults.call(job) if @rocket_job_defaults
         block.call(job) if block
         if RocketJob::Config.inline_mode
+          server = Server.new(name: 'inline')
           job.start
           while job.running?
-            job.work
+            job.work(server)
           end
         end
         job
