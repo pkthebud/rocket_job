@@ -24,7 +24,7 @@ module RocketJob
       # once the block has returned
       def later(method, *args, &block)
         job = build(method, *args, &block)
-        job.save! unless RocketJob::Config.test_mode
+        job.save! unless RocketJob::Config.inline_mode
         job
       end
 
@@ -44,7 +44,7 @@ module RocketJob
         )
         @rocket_job_defaults.call(job) if @rocket_job_defaults
         block.call(job) if block
-        if RocketJob::Config.test_mode
+        if RocketJob::Config.inline_mode
           job.start
           while job.running?
             job.work
