@@ -77,7 +77,7 @@ module RocketJob
       #   job.output.download(io, format: :gzip)
       #   # Internal filename defaults to: "#{job.klass_name.underscore}_#{job.id}"
       def download(file_name_or_io, options={})
-        raise "Cannot download incomplete job: #{job.id}. Currently in state: #{job.state}" unless job.completed?
+        raise "Cannot download incomplete job: #{job.id}. Currently in state: #{job.state}-#{job.sub_state}" if job.processing?
 
         is_file_name = file_name_or_io.is_a?(String)
         options      = options.dup

@@ -6,7 +6,7 @@ class SlicedJobTest < Minitest::Test
   context RocketJob::SlicedJob do
     setup do
       RocketJob::Job.destroy_all
-      @server = RocketJob::Server.new
+      @server = RocketJob::Server.new(name: 'test')
       @server.started
       @lines = [
         'this is some',
@@ -486,8 +486,16 @@ class SlicedJobTest < Minitest::Test
       end
 
       should 'raise exception when not completed' do
+        @job.upload_slice([ @lines.first ])
+        @job.upload_slice([ @lines.second ])
+        @job.start!
+        # Make worker only process one entry
+        @server.stop!
+        count = @job.work(@server)
+        assert_equal 1, count
+
         stream = StringIO.new('')
-        @job.start
+        assert_equal true, @job.running?, @job.state
         assert_raises(::RuntimeError) { @job.download(stream, format: :text) }
       end
 

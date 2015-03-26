@@ -262,6 +262,11 @@ module RocketJob
       output.cleanup!
     end
 
+    # Is this job still being processed
+    def processing?
+      running? && (sub_state == :processing)
+    end
+
     ############################################################################
     protected
 
