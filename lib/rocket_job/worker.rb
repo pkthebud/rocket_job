@@ -48,7 +48,7 @@ module RocketJob
         job = rocket_job_class.new(
           klass:          name,
           perform_method: method.to_sym,
-          arguments: args
+          arguments:      args
         )
         @rocket_job_defaults.call(job) if @rocket_job_defaults
         block.call(job) if block

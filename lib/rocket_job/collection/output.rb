@@ -36,6 +36,10 @@ module RocketJob
       #     format [Symbol]
       #       :text
       #         Text file
+      #       :encrypt
+      #         Encrypt text file using SymmetricEncryption
+      #       :encrypt_compress
+      #         Encrypt and compress text file using SymmetricEncryption
       #       :gzip
       #         GZip file
       #       :zip
@@ -79,12 +83,14 @@ module RocketJob
       def download(file_name_or_io, options={})
         raise "Cannot download incomplete job: #{job.id}. Currently in state: #{job.state}-#{job.sub_state}" if job.processing?
 
-        is_file_name = file_name_or_io.is_a?(String)
-        options      = options.dup
-        format       = options.delete(:format) || :auto
-        delimiter    = options.delete(:delimiter) || $/
-        buffer_size  = options.delete(:buffer_size) || 65535
-        record_count = 0
+        is_file_name     = file_name_or_io.is_a?(String)
+        options          = options.dup
+        format           = options.delete(:format) || :auto
+        delimiter        = options.delete(:delimiter) || $/
+        buffer_size      = options.delete(:buffer_size) || 65535
+        encrypt          = options.delete(:encrypt) || false
+        encrypt_compress = options.delete(:encrypt_compress) || false
+        record_count     = 0
 
         if format == :auto
           raise ArgumentError.new("RocketJob Cannot use format :auto when downloading into a stream") unless is_file_name
@@ -143,6 +149,10 @@ module RocketJob
           else
             writer.call(file_name_or_io)
           end
+        when :encrypt
+          SymmetricEncryption::Writer.open(file_name_or_io, compress: false, &writer)
+        when :encrypt_compress
+          SymmetricEncryption::Writer.open(file_name_or_io, compress: true, &writer)
         else
           raise ArgumentError.new("Invalid RocketJob download format: #{format.inspect}")
         end

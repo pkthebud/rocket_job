@@ -225,7 +225,7 @@ module RocketJob
     # Returns nil if the total record count has not yet been set
     def percent_complete
       return 100 if completed?
-      return 0 unless record_count > 0
+      return 0 unless record_count.to_i > 0
       ((output.total_slices.to_f / record_count) * 100).round
     end
 
