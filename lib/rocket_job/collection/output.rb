@@ -169,7 +169,7 @@ module RocketJob
         rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
           # Ignore duplicates since it means the job was restarted
           raise(exc) unless exc.message.include?('E11000')
-          logger.info "Skipped already processed slice# #{id}"
+          logger.warn "Skipped already processed slice# #{heaader['_id'].inspect}"
         end
       end
     end

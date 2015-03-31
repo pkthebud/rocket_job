@@ -205,7 +205,7 @@ module RocketJob
         count      = 0
         selector = {
           query:  { 'server_name' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-          update: { '$set' => { server: server.name, 'started_at' => Time.now } },
+          update: { '$set' => { server_name: server.name, 'started_at' => Time.now } },
           sort:   '_id'
         }
         while message = collection.find_and_modify(selector)
