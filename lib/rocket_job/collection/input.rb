@@ -214,7 +214,7 @@ module RocketJob
           count += input_slice.size
           break if !server.running?
           # Allow new jobs with a higher priority to interrupt this job worker
-          break if server.re_check_seconds > 0 && ((Time.now - start_time) >= server.re_check_seconds)
+          break if (Time.now - start_time) >= Config.instance.re_check_seconds
         end
         count
       end

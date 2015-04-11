@@ -1,6 +1,9 @@
 # encoding: UTF-8
 module RocketJob
   class SlicedJob < Job
+    # Prevent data in MongoDB from re-defining the model behavior
+    #self.static_keys = true
+
     #
     # User definable attributes
     #
@@ -234,21 +237,21 @@ module RocketJob
       h = super(time_zone)
       case
       when running? || paused?
-        processed = output.total_slices
-        h[:percent_complete] = record_count == 0 ? 0 : (((processed.to_f * slice_size) / record_count) * 100).to_i
-        h[:records_per_hour] = started_at ? ((processed * slice_size / (Time.now - started_at)) * 60 * 60).round : 0
         h[:active_slices]    = input.active_slices
         h[:failed_slices]    = input.failed_slices
-        h[:processed_slices] = processed
         h[:queued_slices]    = input.queued_slices
+        h[:output_slices]    = output.total_slices
         h[:record_count]     = record_count
-        h[:status]           = "Running for #{"%.2f" % h[:seconds]} seconds"
-        h[:status]           << " processing #{record_count} records" if record_count > 0
+        input_slices         = h[:active_slices] + h[:failed_slices] + h[:queued_slices]
+        # Approximate number of input records
+        input_records        = input_slices.to_f * slice_size
+        h[:percent_complete] = ((1.0 - (input_records.to_f / record_count)) * 100).to_i if record_count > 0
+        h[:records_per_hour] = (((record_count - input_records) / h[:seconds]) * 60 * 60).round if record_count > 0
         h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
-        h[:status]           = "Completed processing #{record_count} record(s) at a rate of #{"%.2f" % h[:records_per_hour]} records per hour at #{completed_at.in_time_zone(time_zone)}"
         h[:record_count]     = record_count
+        h[:output_slices]    = output.total_slices
       when queued?
         h[:queued_slices]    = input.total_slices
         h[:record_count]     = record_count
@@ -295,6 +298,11 @@ module RocketJob
       self.sub_state = nil
     end
 
+    def before_abort
+      super
+      cleanup!
+    end
+
     # Checks for completion and runs after_perform if defined
     def check_completion(worker)
       return unless record_count && (input.total_slices == 0)
@@ -320,11 +328,11 @@ module RocketJob
     def process_slice(worker, input_slice, header, &block)
       slice_id            = header['_id']
       record_number       = 0
-      logger.tagged(slice_id) do
+      logger.tagged("Slice #{slice_id}") do
         slice = "#{worker.class.name}##{self.perform_method}, slice:#{slice_id}"
-        logger.info "Start #{slice}"
+        logger.info 'Start'
         output_slice = logger.benchmark_info(
-          "Completed #{slice}",
+          "Completed #{input_slice.size} records",
           metric:             "rocket_job/#{worker.class.name.underscore}/#{self.perform_method}",
           log_exception:      :full,
           on_exception_level: :error,
@@ -332,12 +340,13 @@ module RocketJob
         ) do
           input_slice.collect do |record|
             record_number += 1
-            # TODO Skip previously processed records if this is a retry
-            if block
-              block.call(*self.arguments, record, header)
-            else
-              # perform
-              worker.send(self.perform_method, *self.arguments, record, header)
+            logger.tagged("Rec #{record_number}") do
+              if block
+                block.call(*self.arguments, record, header)
+              else
+                # perform
+                worker.send(self.perform_method, *self.arguments, record, header)
+              end
             end
           end
         end
