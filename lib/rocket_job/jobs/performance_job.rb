@@ -1,25 +1,21 @@
 module RocketJob
   module Jobs
     # # Load a file for processing by the cluster of workers
-    # filename = 'large_file.zip'
-    # job = RocketJob::Jobs::PerformanceJob.upload(file_name, :perform)
+    # job = RocketJob::Jobs::PerformanceJob.upload('large_file.zip')
     #
-    # # Watch the status util it completes
-    # loop { p job.reload.status; break if job.completed?; sleep 5}
+    # # Watch the status until it completes
+    # loop { p job.reload.status; break if job.completed?; sleep 1 }
     #
-    # # Download the results into a Zip file
-    # RocketJob::Writer::Zip.output_file('myfile.zip', 'data.csv') do |file|
-    #   job.output_stream(file)
-    # end
+    # # Once completed, download the output into a zip file
+    # job.output.download('output.zip')
     #
     # # Destroy the job and its output data
     # job.destroy
     #
-    #
     # # Results from running a test with a Zipped 670,000 line CSV file
     # # on a Mac Air i7 dual core, with Ruby MRI and JRuby
     #
-    #                      Ruby MRI V2.2.0            JRuby 1.7.9
+    #                    Ruby MRI V2.2.0            JRuby 1.7.9
     #   upload time:       9s                        15s
     #   perform:          19s  128,120,097/hr        12s   201,584,140/hr
     #   custom_csv:      124s   19,622,109/hr        40s    60,623,399/hr
@@ -55,16 +51,30 @@ module RocketJob
         job.priority            = 5
       end
 
-      # # Load a file for processing by the cluster of workers
-      # filename = 'large_file.zip'
-      # job = RocketJob::Jobs::PerformanceJob.upload(file_name, :perform)
-      #
-      # job = RocketJob::Jobs::PerformanceJob.later(:perform) { |job| job.input_file('myfile.zip') }
-      #
+      # Load a file for processing by the cluster of workers
       def self.upload(file_name, method = :perform)
         start_time = Time.now
-        rocket_job = later(method) { |job| job.input_file(file_name) }
+        rocket_job = later(method) do |job|
+          job.record_count = job.input.upload(file_name)
+        end
         puts "Loaded #{file_name} in #{Time.now - start_time} seconds"
+        rocket_job
+      end
+
+      # Submit numbers for processing, with one number per record
+      #
+      # Example:
+      #   # Submits 1,000,000 numbers for processing by the workers
+      #   job = RocketJob::Jobs::PerformanceJob.number_test
+      def self.number_test(count=1000000, method = :perform)
+        start_time = Time.now
+        rocket_job = later(method) do |job|
+          start = 1
+          job.upload_records do
+            start += 1 if start <= count
+          end
+        end
+        puts "Loaded #{count} records in #{Time.now - start_time} seconds"
         rocket_job
       end
 
@@ -80,7 +90,7 @@ module RocketJob
 
       # Parse supplied line with Regular CSV and then just convert back to a CSV string
       def ruby_csv(line, header)
-        return CSV.parse_line(line).to_csv(row_sep: '')
+        CSV.parse_line(line).to_csv(row_sep: '')
       end
 
       if defined?(JRuby)
