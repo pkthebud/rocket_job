@@ -1,11 +1,11 @@
 # encoding: UTF-8
 module RocketJob
-  module Collection
+  module Sliced
     # A slice consists of several records and header information
     #
-    # Encrypt and Compress are considered Collection level attributes
+    # Encrypt and Compress are considered Slices level attributes
     # and are held there.
-    # To persist this model in any way see the methods on the collection
+    # To persist this model in any way see the methods in Slices
     # that will persist or retrieve this model.
     class Slice
       include MongoMapper::Document

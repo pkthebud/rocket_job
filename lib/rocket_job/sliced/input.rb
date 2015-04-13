@@ -1,8 +1,8 @@
 # encoding: UTF-8
 module RocketJob
-  module Collection
+  module Sliced
     class Input < Slices
-      # Input Collection for this job
+      # Input Slices for this job
       #
       # Parameters
       #   #see Slices#initialize

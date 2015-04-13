@@ -2,7 +2,7 @@
 require 'tempfile'
 
 module RocketJob
-  module Collection
+  module Sliced
     class Output < Base
       attr_reader :collection
 

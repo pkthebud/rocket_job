@@ -1,7 +1,7 @@
 require 'zlib'
 require 'symmetric-encryption'
 module RocketJob
-  module Collection
+  module Sliced
     class Slices
       include Enumerable
 

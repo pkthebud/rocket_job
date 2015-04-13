@@ -47,7 +47,7 @@ module RocketJob
       collect_output == true
     end
 
-    # Returns [RocketJob::Collection::Input] input collection for holding input slices
+    # Returns [RocketJob::Sliced::Input] input collection for holding input slices
     #
     # Parameters:
     #   name [String]
@@ -56,7 +56,7 @@ module RocketJob
     def input(name=nil)
       collection_name = "rocket_job.inputs.#{id.to_s}"
       collection_name << ".#{name}" if name
-      (@inputs ||= {})[name] = RocketJob::Collection::Slices.new(self,
+      (@inputs ||= {})[name] = RocketJob::Sliced::Slices.new(self,
         name:               collection_name,
         encrypt:            job.encrypt,
         compress:           job.compress,
@@ -65,7 +65,7 @@ module RocketJob
       )
     end
 
-    # Returns [RocketJob::Collection::Output] output collection for holding output slices
+    # Returns [RocketJob::Sliced::Output] output collection for holding output slices
     # Returns nil if no output is being collected
     #
     # Parameters:
@@ -75,7 +75,7 @@ module RocketJob
     def output(name=nil)
       collection_name = "rocket_job.outputs.#{job.id.to_s}"
       collection_name << ".#{name}" if name
-      (@outputs ||= {})[name] = RocketJob::Collection::Slices.new(self,
+      (@outputs ||= {})[name] = RocketJob::Sliced::Slices.new(self,
         name:               collection_name,
         encrypt:            job.encrypt,
         compress:           job.compress,
@@ -88,7 +88,7 @@ module RocketJob
     #
     # Updates the record_count after adding the records
     #
-    # See RocketJob::Collection::Input#upload for complete parameters
+    # See RocketJob::Sliced::Input#upload for complete parameters
     #
     # Returns [Integer] the number of records uploaded
     #
@@ -144,7 +144,7 @@ module RocketJob
 
     # Download the output data into the supplied file_name or stream
     #
-    # See RocketJob::Collection::Output#download for complete parameters
+    # See RocketJob::Sliced::Output#download for complete parameters
     #
     # Returns [Integer] the number of records downloaded
     #
