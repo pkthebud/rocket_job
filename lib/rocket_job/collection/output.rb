@@ -1,25 +1,10 @@
 # encoding: UTF-8
 require 'tempfile'
-require 'rocket_job/collection/base'
 
 module RocketJob
   module Collection
     class Output < Base
       attr_reader :collection
-
-      # Output Collection for this job
-      # Parameters
-      #   job [RocketJob::Job]
-      #     The job with which this output collection is associated
-      #
-      #   name [String]
-      #     The named output storage when multiple outputs are being generated
-      #     Default: None ( Uses the single default output collection for this job )
-      def initialize(job, name=nil)
-        collection_name = "rocket_job.outputs.#{job.id.to_s}"
-        collection_name << ".#{name}" if name
-        super(job, collection_name)
-      end
 
       # Read output data and write it into the supplied filename or stream
       # The records are returned in '_id' order. Usually this is the order in
@@ -81,8 +66,6 @@ module RocketJob
       #   job.output.download(io, format: :gzip)
       #   # Internal filename defaults to: "#{job.klass_name.underscore}_#{job.id}"
       def download(file_name_or_io, options={})
-        raise "Cannot download incomplete job: #{job.id}. Currently in state: #{job.state}-#{job.sub_state}" if job.processing?
-
         is_file_name     = file_name_or_io.is_a?(String)
         options          = options.dup
         format           = options.delete(:format) || :auto
@@ -172,6 +155,7 @@ module RocketJob
           logger.warn "Skipped already processed slice# #{heaader['_id'].inspect}"
         end
       end
+
     end
   end
 end

@@ -54,7 +54,15 @@ module RocketJob
     #     The named input source when multiple inputs are being processed
     #     Default: None ( Uses the single default input collection for this job )
     def input(name=nil)
-      @input ||= RocketJob::Collection::Input.new(self, name)
+      collection_name = "rocket_job.inputs.#{id.to_s}"
+      collection_name << ".#{name}" if name
+      (@inputs ||= {})[name] = RocketJob::Collection::Slices.new(self,
+        name:               collection_name,
+        encrypt:            job.encrypt,
+        compress:           job.compress,
+        slice_size:         job.slice_size,
+        compress_delimiter: job.compress_delimiter
+      )
     end
 
     # Returns [RocketJob::Collection::Output] output collection for holding output slices
@@ -65,7 +73,15 @@ module RocketJob
     #     The named output storage when multiple outputs are being generated
     #     Default: None ( Uses the single default output collection for this job )
     def output(name=nil)
-      @output ||= RocketJob::Collection::Output.new(self, name)
+      collection_name = "rocket_job.outputs.#{job.id.to_s}"
+      collection_name << ".#{name}" if name
+      (@outputs ||= {})[name] = RocketJob::Collection::Slices.new(self,
+        name:               collection_name,
+        encrypt:            job.encrypt,
+        compress:           job.compress,
+        slice_size:         job.slice_size,
+        compress_delimiter: job.compress_delimiter
+      )
     end
 
     # Upload the supplied file_name or stream
@@ -135,6 +151,7 @@ module RocketJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def download(file_name_or_io, options={})
+      raise "Cannot download incomplete job: #{id}. Currently in state: #{state}-#{sub_state}" if processing?
       output.download(file_name_or_io, options)
     end
 
@@ -268,6 +285,12 @@ module RocketJob
     # Is this job still being processed
     def processing?
       running? && (sub_state == :processing)
+    end
+
+    # Returns the default output filename for this job
+    # which is made up of the worker class name and the job id
+    def default_file_name
+      "#{klass_name.underscore}_#{id}"
     end
 
     ############################################################################

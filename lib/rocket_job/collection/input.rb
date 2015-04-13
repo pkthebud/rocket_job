@@ -1,20 +1,13 @@
 # encoding: UTF-8
-require 'rocket_job/collection/base'
 module RocketJob
   module Collection
-    class Input < Base
+    class Input < Slices
       # Input Collection for this job
-      # Parameters
-      #   job [RocketJob::Job]
-      #     The job with which this input collection is associated
       #
-      #   name [String]
-      #     The named input source when multiple inputs are being processed
-      #     Default: None ( Uses the single default input collection for this job )
-      def initialize(job, name=nil)
-        collection_name = "rocket_job.inputs.#{job.id.to_s}"
-        collection_name << ".#{name}" if name
-        super(job, collection_name)
+      # Parameters
+      #   #see Slices#initialize
+      def initialize(params)
+        super(params)
         # Index for find_and_modify
         collection.ensure_index('failed' => Mongo::ASCENDING, 'server_name' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING)
       end
@@ -148,14 +141,14 @@ module RocketJob
       #   Invalid: Date, etc.
       def upload_records(&block)
         record_count = 0
-        slice = []
+        slice = Slice.new
         loop do
           record = block.call
           break if record.nil?
-          slice << record
+          slice.records << record
           if slice.size % slice_size == 0
             record_count += upload_slice(slice)
-            slice = []
+            slice = Slice.new
           end
         end
         record_count += upload_slice(slice) if slice.size > 0
@@ -163,25 +156,20 @@ module RocketJob
       end
 
       # Returns [Integer] the number of slices currently being processed
-      def active_slices
-        collection.count(query: {'failed' => { '$exists' => false }, 'server_name' => { '$exists' => true } })
+      def active_count
+        collection.count(query: { 'failed' => { '$exists' => false }, 'server_name' => { '$exists' => true } })
       end
 
       # Returns [Integer] the number of slices that have failed so far for this job
-      # Call #requeue to re-queue the failed jobs for re-processing
-      def failed_slices
-        collection.count(query: {'failed' => { '$exists' => true } })
+      # Call #requeue_failed_slices to re-queue the failed jobs for re-processing
+      def failed_count
+        collection.count(query: { 'failed' => true })
       end
 
       # Returns [Integer] the number of slices queued for processing excluding
       # failed slices
-      def queued_slices
+      def queued_count
         collection.count(query: { 'failed' => { '$exists' => false }, 'server_name' => { '$exists' => false } })
-      end
-
-      # Removes the specified slice from the input collection
-      def remove_slice(slice_id)
-        collection.remove('_id' => slice_id)
       end
 
       # Iterate over each failed record, if any
@@ -250,23 +238,17 @@ module RocketJob
         collection.update({ 'server_name' => server_name }, { '$unset' => { 'server_name' => true, 'started_at' => true } })
       end
 
-      # Set exception information for a specific slice
-      def set_slice_exception(header, exc, record_number)
+      # Set slice exception info
+      def set_exception(slice)
         # Set failure information and increment retry count
         collection.update(
-          { '_id' => header['_id'] },
+          { '_id' => slice.id },
           {
             '$unset' => { 'server_name' => true },
             '$set' => {
-              'exception' => {
-                'class'         => exc.class.to_s,
-                'message'       => exc.message,
-                'backtrace'     => exc.backtrace || [],
-                'server_name'   => header['server_name'],
-                'record_number' => record_number
-              },
-              'failure_count' => header['failure_count'].to_i + 1,
-              'failed'        => true
+              'exception'     => slice.exception,
+              'failure_count' => slice.failure_count,
+              'failed'        => slice.failed
             }
           }
         )
