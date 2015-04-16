@@ -1,14 +1,19 @@
 # encoding: UTF-8
+require 'aasm'
+require 'zlib'
+require 'symmetric-encryption'
 module RocketJob
   module Sliced
-    # A slice consists of several records and header information
+    # A slice is an Array of Records, along with meta-data that is used
+    # or set during processing of the individual records
     #
     # Encrypt and Compress are considered Slices level attributes
     # and are held there.
     # To persist this model in any way see the methods in Slices
     # that will persist or retrieve this model.
-    class Slice
+    class Slice < Array
       include MongoMapper::Document
+      include AASM
 
       # State Machine events and transitions
       #
@@ -42,8 +47,12 @@ module RocketJob
           transitions from: :running, to: :completed
         end
 
-        event :fail do
+        event :fail  do
           transitions from: :running, to: :failed
+        end
+
+        event :retry  do
+          transitions from: :failed, to: :running
         end
       end
 
@@ -60,87 +69,82 @@ module RocketJob
       # This name of the server that this job is being processed by, or was processed by
       key :server_name,             String
 
-      # Whether this job is currently in a failed state and needs to be re-tried if applicable
-      key :failed,                  Boolean
+      # The last exception for this slice if any
+      one :exception,               class_name: 'RocketJob::JobException'
 
-      # Store the last exception for this job
-      key :exception,               Hash
-
-      # The records for this slice if encrypted
-      key :encrypted_records,       String
-
-      # The records for this slice if compressed
-      key :compressed_records,      String
-
-      # The records that make up this slice
-      def records
-        @records ||= begin
-
-        end
+      # Alternative way to replace the records within this slice
+      def records=(records)
+        clear
+        concat(records)
       end
 
-      # Returns [Slice] The decompressed / un-encrypted data string if applicable
-      def self.from_bson(doc, encrypt, compress)
-        return unless doc
+      # Alternative way to obtain the list of records within this slice
+      alias_method :records, :to_a
 
-        # In-flight Backward compatibility
-        if old_slice = doc.delete('slice')
-          doc['records'] = old_slice
+      # Fail this slice, along with the exception that caused the failure
+      def failure(exc=nil, record_number=nil)
+        if exc
+          self.exception          = JobException.from_exception(exc)
+          exception.server_name   = server_name
+          exception.record_number = record_number
         end
-
-        slice = self.class.new
-        slice.load_from_database(doc)
-        if encrypt || compress
-          str = if encrypt
-            SymmetricEncryption.cipher.binary_decrypt(slice.records.to_s)
-          else compress
-            Zlib::Inflate.inflate(slice.records.to_s).force_encoding(UTF8_ENCODING)
-          end
-          # Convert the de-compressed and/or un-encrypted string back into an array
-          slice.records = str.split(compress_delimiter)
-        end
-        slice
-      end
-
-      # Returns [Integer] the number of records in this slice
-      def size
-        records.size
-      end
-
-      # Set exception information for this slice
-      def set_exception(exc, record_number)
-        self.exception = {
-          'class'         => exc.class.to_s,
-          'message'       => exc.message,
-          'backtrace'     => exc.backtrace || [],
-          'server_name'   => server_name,
-          'record_number' => record_number
-        }
         self.failure_count = failure_count.to_i + 1
-        self.failed        = true
         self.server_name   = nil
+        fail
       end
 
       # Returns [Hash] the slice as a Hash for storage purposes
       # Compresses / Encrypts the slice according to the job setting
-      def as_bson(encrypt, compress)
+      def to_bson(options={})
+        options            = options.dup
+        encrypt            = options.delete(:encrypt)  || false
+        compress           = options.delete(:compress) || false
+        options.each{ |o| raise ArgumentError, "Invalid option: #{o.inspect}" }
+
         attrs = attributes.dup
-        if encrypt || compress
-          #
-          # TODO Handle non-string records too.
-          #
+        attrs['records'] = if encrypt || compress
           # Convert slice of records in a single string
-          str  = slice.records.join(compress_delimiter)
+          str  = BSON.serialize('r' => to_a).to_s
           data = if encrypt
             # Encrypt to binary without applying an encoding such as Base64
             # Use a random_iv with each encryption for better security
-            BSON::Binary.new(SymmetricEncryption.cipher.binary_encrypt(str, true, compress))
+            SymmetricEncryption.cipher.binary_encrypt(str, true, compress)
           else compress
-            BSON::Binary.new(Zlib::Deflate.deflate(str))
+            Zlib::Deflate.deflate(str)
           end
-          attrs['records'] = data
+          BSON::Binary.new(data)
+        else
+          to_a
         end
         attrs
+      end
+
+      # Returns [Slice] The decompressed / un-encrypted data string if applicable
+      def self.from_bson(doc)
+        # Extract the records from doc
+        records = doc.delete('records') || doc.delete('slice')
+
+        slice = new
+        slice.send(:load_from_database, doc)
+
+        # Records not compressed or encrypted?
+        if records.is_a?(Array)
+          slice.concat(records)
+        else
+          # Convert BSON::Binary to a string
+          str = records.to_s
+          if SymmetricEncryption::Cipher.has_header?(str)
+            str = SymmetricEncryption.cipher.binary_decrypt(str)
+          else
+            str = Zlib::Inflate.inflate(records.to_s)
+          end
+          slice.concat(BSON.deserialize(str)['r'])
+        end
+        slice
+      end
+
+      def inspect
+        "#<#{self.class.name} #{attributes.collect{|k,v| "#{k.inspect}=>#{v.inspect}"}.join(' ')}> #{to_a.inspect}"
       end
 
       #############################################################################
@@ -148,6 +152,9 @@ module RocketJob
 
       # Prevent this model from being persisted directly, since it has a dynamic collection
       def save(*_)
+      end
+
+      def save!(*_)
       end
 
       def update(*_)

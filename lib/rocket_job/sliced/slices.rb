@@ -1,11 +1,9 @@
-require 'zlib'
-require 'symmetric-encryption'
 module RocketJob
   module Sliced
     class Slices
       include Enumerable
 
-      attr_accessor :encrypt, :compress, :slice_size, :compress_delimiter
+      attr_accessor :encrypt, :compress, :slice_size
       attr_reader :collection
 
       # Parameters
@@ -20,10 +18,6 @@ module RocketJob
       #   encrypt: [Boolean]
       #     Whether to encrypt slice records held in this collection
       #     Default: false
-      #   compress_delimiter: [String]
-      #     When compressing or encrypting data, this is the delimiter to use
-      #     when serializing multiple records
-      #     Default: '|@|'
       def initialize(params)
         params              = params.dup
         name                = params.delete(:name)
@@ -31,7 +25,6 @@ module RocketJob
         @encrypt            = params.delete(:encrypt) || false
         @compress           = params.delete(:compress) || false
         @slice_size         = params.delete(:slice_size) || 100
-        @compress_delimiter = params.delete(:compress_delimiter) || '|@|'
         @collection         = Config.mongo_work_connection.db[name]
         params.each { |param| raise(ArgumentError, "Invalid parameter: #{param}") }
       end
@@ -40,11 +33,13 @@ module RocketJob
       def count
         collection.count
       end
+      alias_method :size, :count
+      alias_method :length, :count
 
       # Iterate over each slice in this collection
       def each(filter={}, &block)
         collection.find(filter, sort: '_id', timeout: false) do |cursor|
-          cursor.each { |doc| block.call(self.class.from_bson(doc, encrypt, compress)) }
+          cursor.each { |doc| block.call(Slice.from_bson(doc)) }
         end
       end
 
@@ -52,37 +47,52 @@ module RocketJob
       # and the header for that slice
       # Returns nil if the collection does not contain any slices
       def first
-        doc = collection.find_one(sort: [['_id', Mongo::ASCENDING]])
-        self.class.from_bson(doc, encrypt, compress) if doc
+        doc = collection.find_one({}, sort: [['_id', Mongo::ASCENDING]])
+        Slice.from_bson(doc) if doc
       end
 
       # Returns [Slice] the last slice in the collection
       # and the header for that slice
       # Returns nil if the collection does not contain any slices
       def last
-        doc = collection.find_one(sort: [['_id', Mongo::DESCENDING]])
-        self.class.from_bson(doc, encrypt, compress) if doc
+        doc = collection.find_one({}, sort: [['_id', Mongo::DESCENDING]])
+        Slice.from_bson(doc) if doc
       end
 
       # Insert a new slice into the collection
+      #
+      # Returns [Integer] the number of records uploaded
+      #
+      # Parameters
+      #   slice [RocketJob::Sliced::Slice]
+      #     The slice to write to the slices collection
+      #     If slice is an Array, it will be converted to a Slice before inserting
+      #     into the slices collection
+      #
+      # Note:
+      #   `slice_size` is not enforced.
+      #   However many records are present in the slice will be written as a
+      #   slingle slice to the slices collection
       def insert(slice)
-        collection.insert(slice.as_bson(encrypt, compress))
+        slice = Slice.new(records: slice) unless slice.is_a?(Slice)
+        collection.insert(slice.to_bson(encrypt: encrypt, compress: compress))
+        slice
       end
       alias_method :<<, :insert
 
       # Update an existing slice in the collection
       def update(slice)
-        collection.update({'_id' => slice.id}, slice.as_bson(encrypt, compress))
-      end
-
-      # Drop this collection since it is no longer needed
-      def cleanup!
-        collection.drop
+        collection.update({'_id' => slice.id}, slice.to_bson(encrypt: encrypt, compress: compress))
       end
 
       # Removes the specified slice from the input collection
-      def remove_slice(slice)
+      def remove(slice)
         collection.remove('_id' => slice.id)
+      end
+
+      # Drop this collection since it is no longer needed
+      def destroy
+        collection.drop
       end
 
     end
