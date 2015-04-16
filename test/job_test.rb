@@ -113,5 +113,25 @@ class JobTest < Minitest::Test
       end
     end
 
+    context "transitions" do
+      context "#resume!"
+
+      should "transition from paused to running" do
+        @job.state = :paused
+        @job.resume!
+        assert_equal(:running, @job.state)
+      end
+
+      invalid_states = (RocketJob::Job.aasm.states.map(&:name) - [:paused])
+
+      invalid_states.each do |state|
+        should "not allow #{state} jobs to resume" do
+          @job.state = state
+          assert_raises(AASM::InvalidTransition) do
+            @job.resume!
+          end
+        end
+      end
+    end
   end
 end

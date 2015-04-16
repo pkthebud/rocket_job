@@ -215,7 +215,7 @@ module RocketJob
       end
 
       event :resume, before: :before_resume do
-        transitions from: :running, to: :paused
+        transitions from: :paused, to: :running
       end
 
       event :abort, before: :before_abort do
