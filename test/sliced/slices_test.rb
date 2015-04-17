@@ -9,7 +9,7 @@ module Sliced
           name:       'rocket_job.slices.test',
           slice_size: 2
         )
-        @slices.collection.remove({})
+        @slices.clear
         assert_equal 0, @slices.size
 
         @first = RocketJob::Sliced::Slice.new
@@ -40,7 +40,7 @@ module Sliced
       end
 
       teardown do
-        @slices.destroy
+        @slices.drop
       end
 
       context '#count' do
@@ -101,6 +101,43 @@ module Sliced
           @slices.insert([1,2,3,4])
           assert_equal count + 1, @slices.count
         end
+        should 'insert a slice from an input slice' do
+          input_slice = RocketJob::Sliced::Slice.new(records: [10,20,30])
+          count = @slices.count
+          slice = RocketJob::Sliced::Slice.new(records: [1,2,3,4])
+          @slices.insert(slice, input_slice)
+          assert_equal count + 1, @slices.count
+          assert_equal input_slice.id, slice.id
+          assert_equal input_slice.id, @slices.last.id
+
+          # Not throw exception on duplicate insert:
+          @slices.insert(slice, input_slice)
+          assert_equal count + 1, @slices.count
+          assert_equal input_slice.id, slice.id
+          assert_equal input_slice.id, @slices.last.id
+        end
+      end
+
+      context '#find' do
+        should 'find a slice by id' do
+          count = @slices.count
+          slice = RocketJob::Sliced::Slice.new(records: [1,2,3,4])
+          @slices.insert(slice)
+          assert_equal count + 1, @slices.count
+          assert found_slice = @slices.find(slice.id)
+          assert_equal slice.id, found_slice.id
+          assert_equal slice.to_a, found_slice.to_a
+        end
+
+        should 'find a slice by string id' do
+          count = @slices.count
+          slice = RocketJob::Sliced::Slice.new(records: [1,2,3,4])
+          @slices.insert(slice)
+          assert_equal count + 1, @slices.count
+          assert found_slice = @slices.find(slice.id.to_s)
+          assert_equal slice.id, found_slice.id
+          assert_equal slice.to_a, found_slice.to_a
+        end
       end
 
       context '#remove' do
@@ -113,10 +150,18 @@ module Sliced
         end
       end
 
-      context '#destroy' do
-        should 'destroy all slices in this collection' do
+      context '#drop' do
+        should 'drop this collection' do
           assert_equal 3, @slices.count
-          @slices.destroy
+          @slices.drop
+          assert_equal 0, @slices.count
+        end
+      end
+
+      context '#clear' do
+        should 'clear out all slices in this collection' do
+          assert_equal 3, @slices.count
+          @slices.clear
           assert_equal 0, @slices.count
         end
       end

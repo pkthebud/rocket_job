@@ -1,11 +1,6 @@
 # encoding: UTF-8
 
 # Mix-in to add Worker behavior to a class
-#
-# Optional methods that can be implemented by workers:
-#   on_exception
-#     Called whenever an exception is raised while processing that job
-#
 module RocketJob
   module Worker
     def self.included(base)

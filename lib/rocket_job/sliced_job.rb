@@ -19,13 +19,18 @@ module RocketJob
     # records and results collections will be encrypted
     key :encrypt,                 Boolean, default: false
 
-    # When compressing or encrypting multiple lines within a single record the
-    # array needs to be converted back to a string. The delimiter used to join
-    # and then split apart the array is:
-    key :compress_delimiter,      String, default: '|@|'
-
     # Number of records to include in each slice that is processed
+    # Note:
+    #   slice_size is only used by SlicedJob#upload_records & Input#upload_records
+    #   When slices are supplied directly, their size is not modified to match this number
     key :slice_size,              Integer, default: 100
+
+    # Whether to retain nil results.
+    #
+    # Only applicable if `collect_output` is `true`
+    # Set to `false` to prevent collecting output from the perform
+    # method when it returns `nil`.
+    key :collect_nil_output,      Boolean, default: true
 
     #
     # Values that jobs can update during processing
@@ -40,11 +45,16 @@ module RocketJob
 
     after_destroy :cleanup!
 
-    validates_presence_of :record_count, :compress_delimiter, :slice_size
+    validates_presence_of :record_count, :slice_size
 
     # Returns [true|false] whether to collect the results from running this batch
     def collect_output?
       collect_output == true
+    end
+
+    # Returns [true|false] whether to collect nil results from running this batch
+    def collect_nil_output?
+      collect_output? ? (collect_nil_output == true) : false
     end
 
     # Returns [RocketJob::Sliced::Input] input collection for holding input slices
@@ -60,8 +70,7 @@ module RocketJob
         name:               collection_name,
         encrypt:            job.encrypt,
         compress:           job.compress,
-        slice_size:         job.slice_size,
-        compress_delimiter: job.compress_delimiter
+        slice_size:         job.slice_size
       )
     end
 
@@ -79,8 +88,7 @@ module RocketJob
         name:               collection_name,
         encrypt:            job.encrypt,
         compress:           job.compress,
-        slice_size:         job.slice_size,
-        compress_delimiter: job.compress_delimiter
+        slice_size:         job.slice_size
       )
     end
 
@@ -117,7 +125,7 @@ module RocketJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def upload_slice(slice)
-      count = input.upload_slice(slice)
+      count = input.insert(slice)
       self.record_count += count
       count
     end
@@ -155,46 +163,27 @@ module RocketJob
       output.download(file_name_or_io, options)
     end
 
-    # Calls the supplied slice for each record available for processing
-    # Multiple threads can call this method at the same time
-    # to increase concurrency.
+    # Processes records in each available slice for this job. Slices are processed
+    # one at a time to allow for concurrent calls to this method to increase
+    # throughput. Processing will continue until there are no more jobs available
+    # for this job.
     #
-    # By default it will keep processing until no more records are left for processing.
-    # After each slice of records has been processed without raising an exception
-    # it is removed from the records queue
+    # Returns [Integer] the number of records processed
+    # Returns [??] when no slices are available for processing on this job
     #
-    # The result is from the slice is written to the output collection if
-    # collect_output? is true
+    # Slices are destroyed after their records are successfully processed
+    # TODO Make this an option
     #
-    # Returns the number of records processed
+    # Results are stored in the output collection if `collect_output?`
+    # `nil` results from workers are kept if `collect_nil_output`
     #
-    # If an exception was thrown the entire slice of records is marked with
-    # the exception that occurred and removed from general by increasing its
-    # retry count.
+    # If an exception was thrown the entire slice of records is marked as failed.
     #
     # If the mongo_ha gem has been loaded, then the connection to mongo is
     # automatically re-established and the job will resume anytime a
     # Mongo connection failure occurs.
     #
     # Thread-safe, can be called by multiple threads at the same time
-    #
-    # Parameters
-    #   on_exception [Proc]
-    #     Block of code to execute if an unhandled exception was raised during
-    #     the processing of a slice
-    #
-    #   slice_number [Integer|Array<Integer>]
-    #     Only work on that specific slice number(s)
-    #
-    #   slice_count [Integer]
-    #     Only process slice_count slices before returning
-    #     Default: Keep processing until there are no more slices available
-    #
-    #   processing_seconds [Integer]
-    #     Number of seconds to process work for when multiple records are being
-    #     processed.
-    #     Default: 0 => No time limit
-    #
     def work(server)
       raise 'Job must be started before calling #work' unless running?
       count = 0
@@ -211,13 +200,19 @@ module RocketJob
           complete!
           return 0
         end
-        count = input.process_slices(server) do |slice, header|
-          process_slice(worker, slice, header)
+        start_time = Time.now
+        while slice = input.next_slice(server.name)
+          count += slice.size
+          count += process_slice(worker, slice)
+          # TODO Protect with a Mutex
+          break if !server.running?
+          # Allow new jobs with a higher priority to interrupt this job worker
+          break if (Time.now - start_time) >= Config.instance.re_check_seconds
         end
+        # Don't check if not everything has finished processing
         check_completion(worker)
         count
       rescue Exception => exc
-        worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
         set_exception(server.name, exc)
         raise exc if RocketJob::Config.inline_mode
         count
@@ -251,6 +246,7 @@ module RocketJob
 
     # Returns [Hash] status of this job
     def status(time_zone='EST')
+      # TODO Add sub-state
       h = super(time_zone)
       case
       when running? || paused?
@@ -348,43 +344,56 @@ module RocketJob
     # Process a single message from Mongo
     # A message consists of a header and the slice of records to process
     # If the message is successfully processed it will be removed from the input collection
-    def process_slice(worker, input_slice, header, &block)
-      slice_id            = header['_id']
+    def process_slice(worker, slice, &block)
       record_number       = 0
-      logger.tagged("Slice #{slice_id}") do
-        slice = "#{worker.class.name}##{self.perform_method}, slice:#{slice_id}"
-        logger.info 'Start'
-        output_slice = logger.benchmark_info(
-          "Completed #{input_slice.size} records",
-          metric:             "rocket_job/#{worker.class.name.underscore}/#{self.perform_method}",
+      logger.tagged("Slice #{slice.id}") do
+        logger.info "Start #{klass}##{perform_method}"
+        output_records = logger.benchmark_info(
+          "Completed #{slice.size} records",
+          metric:             "rocket_job/#{klass.underscore}/#{perform_method}",
           log_exception:      :full,
           on_exception_level: :error,
-          silence:            self.log_level
+          silence:            log_level
         ) do
-          input_slice.collect do |record|
+          slice.collect do |record|
             record_number += 1
             logger.tagged("Rec #{record_number}") do
               if block
-                block.call(*self.arguments, record, header)
+                block.call(*arguments, record, slice)
               else
                 # perform
-                worker.send(self.perform_method, *self.arguments, record, header)
+                worker.send(perform_method, *arguments, record, slice)
               end
             end
           end
         end
 
-        # Ignore duplicates on insert into output.collection since it successfully completed previously
-        output.upload_slice(output_slice, id: slice_id) if self.collect_output?
+        if collect_output?
+          if collect_nil_output?
+            # Ignore duplicates on insert into output.collection since it successfully completed previously
+            output.insert(output_records, slice)
+          else
+            output_records.compact!
+            output.insert(output_records, slice) if output_records.size > 0
+          end
+        end
 
         # On successful completion remove the slice from the input queue
-        input.remove_slice(slice_id)
+        # TODO Option to set it to completed instead of destroying it
+        input.remove_slice(slice)
       end
     rescue Exception => exc
-      worker.on_exception(exc) if worker && worker.respond_to?(:on_exception)
-      input.set_slice_exception(header, exc, record_number)
+      slice.failure(exc, record_number)
+      input.update(slice)
       raise exc if RocketJob::Config.inline_mode
       record_number
+    end
+
+    protected
+
+    def before_retry
+      super
+      input.requeue_failed
     end
 
   end

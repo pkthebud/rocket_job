@@ -9,7 +9,7 @@ module RocketJob
       def initialize(params)
         super(params)
         # Index for find_and_modify
-        collection.ensure_index('failed' => Mongo::ASCENDING, 'server_name' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING)
+        collection.ensure_index('state' => Mongo::ASCENDING, '_id' => Mongo::ASCENDING)
       end
 
       # Load records for processing from the supplied filename or stream into this job.
@@ -115,21 +115,6 @@ module RocketJob
         end
       end
 
-      # Upload the supplied slices for processing by workers
-      #
-      # Returns [Integer] the number of records uploaded
-      #
-      # Parameters
-      #   `slice` [ Array<Hash | Array | String | Integer | Float | Symbol | Regexp | Time> ]
-      #     All elements in `array` must be serializable to BSON
-      #     For example the following types are not supported: Date
-      #
-      # Note: The caller should honor `:slice_size`, the entire slice is loaded as-is.
-      def upload_slice(slice)
-        collection.insert(build_message(slice))
-        return slice.size
-      end
-
       # Upload each record returned by the supplied Block until it returns nil
       # The records are automatically grouped into slices based on :slice_size
       #
@@ -141,35 +126,39 @@ module RocketJob
       #   Invalid: Date, etc.
       def upload_records(&block)
         record_count = 0
-        slice = Slice.new
+        records = []
         loop do
           record = block.call
           break if record.nil?
-          slice.records << record
-          if slice.size % slice_size == 0
-            record_count += upload_slice(slice)
-            slice = Slice.new
+          records << record
+          if records.size % slice_size == 0
+            record_count += records.size
+            insert(records)
+            records = []
           end
         end
-        record_count += upload_slice(slice) if slice.size > 0
+        if records.size > 0
+          record_count += records.size
+          insert(records)
+        end
         record_count
       end
 
       # Returns [Integer] the number of slices currently being processed
-      def active_count
-        collection.count(query: { 'failed' => { '$exists' => false }, 'server_name' => { '$exists' => true } })
+      def running_count
+        collection.count(query: { 'state' => 'running' })
       end
 
       # Returns [Integer] the number of slices that have failed so far for this job
       # Call #requeue_failed_slices to re-queue the failed jobs for re-processing
       def failed_count
-        collection.count(query: { 'failed' => true })
+        collection.count(query: { 'state' => 'failed' })
       end
 
       # Returns [Integer] the number of slices queued for processing excluding
       # failed slices
       def queued_count
-        collection.count(query: { 'failed' => { '$exists' => false }, 'server_name' => { '$exists' => false } })
+        collection.count(query: { 'state' => 'queued' })
       end
 
       # Iterate over each failed record, if any
@@ -177,81 +166,53 @@ module RocketJob
       # record is returned along with the header containing the exception
       # details
       def each_failed_record(&block)
-        each_slice({'failed' => { '$exists' => true }}) do |slice, header|
-          exception = header['exception']
-          if exception && (record_number = exception['record_number'])
-            block.call(slice[record_number - 1], header)
+        each('state' => 'failed') do |slice|
+          if slice.exception && (record_number = slice.exception.record_number)
+            block.call(slice.at(record_number - 1), slice)
           end
         end
-      end
-
-      # Returns [Integer] the number of records processed
-      # Invokes the supplied block passing in the slice and the header
-      # for every slice found
-      def process_slices(server, &block)
-        start_time = Time.now
-        count      = 0
-        selector = {
-          query:  { 'server_name' => { '$exists' => false }, 'failed' => { '$exists' => false } },
-          update: { '$set' => { server_name: server.name, 'started_at' => Time.now } },
-          sort:   '_id'
-        }
-        while message = collection.find_and_modify(selector)
-          input_slice, header = parse_message(message)
-          block.call(input_slice, header)
-          count += input_slice.size
-          break if !server.running?
-          # Allow new jobs with a higher priority to interrupt this job worker
-          break if (Time.now - start_time) >= Config.instance.re_check_seconds
-        end
-        count
       end
 
       # Requeue all failed slices
       #
       # Returns [Integer] the number of slices re-queued for processing
-      #
-      # Parameters:
-      #   slice_numbers [Array<Integer>]
-      #     Numbers of the slices to retry
-      #     Default: Retry all slices for this job
-      def requeue_failed_slices(slice_ids=nil)
-        selector = {'failed' => { '$exists' => true }}
-        # Apply slice_number override if applicable
-        if slice_ids
-          case slice_ids.size
-          when 0
-            return 0
-          when 1
-            selector['_id'] = slice_ids.first
-          else
-            selector['_id'] = { '$in' => slice_ids }
-          end
-        end
-
-        result = collection.update(selector, {'$unset' => { 'server_name' => true, 'failed' => true, 'exception' => true, 'started_at' => true }}, { multi: true })
-        result #['nModified'] || 0
-      end
-
-      # Requeue all slices for a server that is no longer available
-      def requeue_incomplete_slices(server_name)
-        collection.update({ 'server_name' => server_name }, { '$unset' => { 'server_name' => true, 'started_at' => true } })
-      end
-
-      # Set slice exception info
-      def set_exception(slice)
-        # Set failure information and increment retry count
-        collection.update(
-          { '_id' => slice.id },
-          {
-            '$unset' => { 'server_name' => true },
-            '$set' => {
-              'exception'     => slice.exception,
-              'failure_count' => slice.failure_count,
-              'failed'        => slice.failed
-            }
-          }
+      def requeue_failed
+        result = collection.update(
+          { 'state' => 'failed' },
+          { '$unset' => { 'server_name' => true, 'started_at' => true },
+            '$set'   => { 'state' => 'queued' } }
         )
+        result['nModified'] || result['n'] || 0
+      end
+
+      # Requeue all running slices for a server that is no longer available
+      #
+      # Returns [Integer] the number of slices re-queued for processing
+      def requeue_running(server_name)
+        result = collection.update(
+          { 'state' => 'running', 'server_name' => server_name },
+          { '$unset' => { 'server_name' => true, 'started_at' => true },
+            '$set'   => { 'state' => 'queued' } }
+        )
+        result['nModified'] || result['n'] || 0
+      end
+
+      # Returns the next slice to work on in id order
+      # Returns nil if there are currently no queued slices
+      #
+      # If a slice is in queued state it will be started and assigned to this server
+      def next_slice(server_name)
+        if doc = collection.find_and_modify(
+            query:  { 'state' => 'queued' },
+            sort:   '_id',
+            update: { '$set' => { 'server_name' => server_name, 'state' => 'running' } }
+          )
+          slice = Slice.from_bson(doc)
+          # Also update in-memory state and run call-backs
+          slice.server_name = server_name
+          slice.start unless slice.running?
+          slice
+        end
       end
 
       ##########################################################################

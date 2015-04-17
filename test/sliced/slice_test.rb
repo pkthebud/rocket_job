@@ -22,7 +22,7 @@ module Sliced
           assert_equal 0, @slice.size
           @slice << 'hello'
           assert_equal 1, @slice.size
-          @slice.insert('next')
+          @slice << 'next'
           assert_equal 2, @slice.size
           assert_equal 'hello', @slice.first
         end
@@ -211,6 +211,8 @@ module Sliced
         @slice.fail
         assert_equal :failed, @slice.state
         @slice.retry
+        assert_equal :queued, @slice.state
+        @slice.start
         assert_equal :running, @slice.state
         @slice.complete
         assert_equal :completed, @slice.state

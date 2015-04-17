@@ -11,6 +11,20 @@ module RocketJob
     # and are held there.
     # To persist this model in any way see the methods in Slices
     # that will persist or retrieve this model.
+    #
+    # Note:
+    #  Operator [] is required by mongomapper, so to acccess the Array [], use
+    #  the method #at instead
+    #
+    # Example:
+    #   slice = RocketJob::Sliced::Slice.new
+    #   slice << 'first'
+    #   slice << 'second'
+    #   second = slice.at(1)
+    #
+    #   # The [] operator is for retrieving attributes:
+    #   slice['state']
+    #
     class Slice < Array
       include MongoMapper::Document
       include AASM
@@ -52,7 +66,7 @@ module RocketJob
         end
 
         event :retry  do
-          transitions from: :failed, to: :running
+          transitions from: :failed, to: :queued
         end
       end
 
@@ -161,6 +175,15 @@ module RocketJob
       end
 
       def insert(*_)
+      end
+
+      def reload(*_)
+      end
+
+      def self.find(*_)
+      end
+
+      def self.find_one(*_)
       end
 
     end

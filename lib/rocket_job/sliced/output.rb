@@ -18,13 +18,9 @@ module RocketJob
       #     Or, an IO Stream that responds to: :read
       #
       #   options:
-      #     format [Symbol]
+      #     format: [Symbol]
       #       :text
       #         Text file
-      #       :encrypt
-      #         Encrypt text file using SymmetricEncryption
-      #       :encrypt_compress
-      #         Encrypt and compress text file using SymmetricEncryption
       #       :gzip
       #         GZip file
       #       :zip
@@ -33,17 +29,25 @@ module RocketJob
       #         Auto-detect. If file_name ends with '.zip' then zip is assumed
       #         Note: Only applicable when a file_name of type String is being supplied
       #
-      #     delimiter [String]
+      #     delimiter: [String]
       #       Add the specified delimiter after every record when writing it
       #       to the output stream
       #       Default: OS Specific. Linux: "\n"
       #
-      #     zip_filename [String]
+      #     encrypt: [true|false|Hash]
+      #       Encrypt text file using SymmetricEncryption
+      #       When a Hash, it is passed as the options to SymmetricEncryption::Writer
+      #       For Example, to compress the data in the file:
+      #         { compress: true }
+      #       Default: false
+      #
+      #     zip_filename: [String]
       #       When a the output is being compressed into a zip file, the name
       #       of the file inside the ZIP container needs a filename.
       #       Default: 'file'
       #
       # Note:
+      #   - Currently the encrypt option is only available with format: :text
       #   - Cannot stream into a Zip file since it has to rewind to the beginning
       #     to update the header information after adding a file. Use :gzip
       #   - If an io stream is supplied, it is read until it returns nil
@@ -65,6 +69,11 @@ module RocketJob
       #   # Save to a stream:
       #   job.output.download(io, format: :gzip)
       #   # Internal filename defaults to: "#{job.klass_name.underscore}_#{job.id}"
+      #
+      # Example:
+      #   # Download text file in an encrypted file
+      #   # Compress its contents before encrypting
+      #   job.output.download('hello.csv', encrypt: { compress: true })
       def download(file_name_or_io, options={})
         is_file_name     = file_name_or_io.is_a?(String)
         options          = options.dup
@@ -72,7 +81,6 @@ module RocketJob
         delimiter        = options.delete(:delimiter) || $/
         buffer_size      = options.delete(:buffer_size) || 65535
         encrypt          = options.delete(:encrypt) || false
-        encrypt_compress = options.delete(:encrypt_compress) || false
         record_count     = 0
 
         if format == :auto
@@ -98,6 +106,7 @@ module RocketJob
         # Download the file from Mongo
         case format
         when :zip
+          raise ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :zip"
           zip_filename = options.delete(:zip_filename) || 'file'
           if is_file_name
             RocketJob::Writer::Zip.write_file(file_name_or_io, zip_filename, &writer)
@@ -116,6 +125,7 @@ module RocketJob
             end
           end
         when :gzip
+          raise ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :gzip"
           if is_file_name
             Zlib::GzipWriter.open(file_name_or_io, &writer)
           else
@@ -127,33 +137,22 @@ module RocketJob
             end
           end
         when :text
-          if is_file_name
-            File.open(file_name_or_io, 'wt', &writer)
+          if encrypt
+            SymmetricEncryption::Writer.open(file_name_or_io,
+              encrypt == true ? {} : encrypt,
+              &writer
+            )
           else
-            writer.call(file_name_or_io)
+            if is_file_name
+              File.open(file_name_or_io, 'wt', &writer)
+            else
+              writer.call(file_name_or_io)
+            end
           end
-        when :encrypt
-          SymmetricEncryption::Writer.open(file_name_or_io, compress: false, &writer)
-        when :encrypt_compress
-          SymmetricEncryption::Writer.open(file_name_or_io, compress: true, &writer)
         else
           raise ArgumentError.new("Invalid RocketJob download format: #{format.inspect}")
         end
         record_count
-      end
-
-      # Write the specified slice to the output collection with the supplied id
-      # For one to one jobs where the output file record count matches the input
-      # file record count, it is recommended to pass the _id supplied in the input
-      # slice
-      def upload_slice(slice, header={})
-        begin
-          collection.insert(build_message(slice, header))
-        rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
-          # Ignore duplicates since it means the job was restarted
-          raise(exc) unless exc.message.include?('E11000')
-          logger.warn "Skipped already processed slice# #{heaader['_id'].inspect}"
-        end
       end
 
     end

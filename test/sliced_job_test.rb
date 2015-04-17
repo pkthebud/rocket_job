@@ -51,10 +51,10 @@ class SlicedJobTest < Minitest::Test
         @lines.each { |line| @job.upload_slice([line]) }
 
         assert_equal @lines.size, @job.record_count
-        assert_equal @lines.size, @job.input.total_slices
-        assert_equal @lines.size, @job.input.queued_slices
-        assert_equal 0,           @job.input.active_slices
-        assert_equal 0,           @job.input.failed_slices
+        assert_equal @lines.size, @job.input.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
       end
     end
 
@@ -69,10 +69,10 @@ class SlicedJobTest < Minitest::Test
         end
         assert_equal @lines.size, count
         assert_equal @lines.size, @job.record_count
-        assert_equal @lines.size, @job.input.total_slices
-        assert_equal @lines.size, @job.input.queued_slices
-        assert_equal 0,           @job.input.active_slices
-        assert_equal 0,           @job.input.failed_slices
+        assert_equal @lines.size, @job.input.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
       end
 
       should 'support slice size of 2' do
@@ -87,10 +87,10 @@ class SlicedJobTest < Minitest::Test
 
         assert_equal @lines.size, count
         assert_equal @lines.size, @job.record_count
-        assert_equal slice_count, @job.input.total_slices
-        assert_equal slice_count, @job.input.queued_slices
-        assert_equal 0,           @job.input.active_slices
-        assert_equal 0,           @job.input.failed_slices
+        assert_equal slice_count, @job.input.count
+        assert_equal slice_count, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
       end
     end
 
@@ -105,16 +105,16 @@ class SlicedJobTest < Minitest::Test
         @job.start!
 
         assert_equal @lines.size, @job.record_count
-        assert_equal @lines.size, @job.input.total_slices
-        assert_equal @lines.size, @job.input.queued_slices
-        assert_equal 0,           @job.input.active_slices
-        assert_equal 0,           @job.input.failed_slices
+        assert_equal @lines.size, @job.input.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
 
         count = 0
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         @job.output.each_record do |record|
           assert_equal @lines[count], record
           count += 1
@@ -122,12 +122,12 @@ class SlicedJobTest < Minitest::Test
 
         assert_equal @lines.size, count
         assert_equal @lines.size, @job.record_count
-        assert_equal 0,           @job.input.total_slices
-        assert_equal 0,           @job.input.queued_slices
-        assert_equal 0,           @job.input.active_slices
-        assert_equal 0,           @job.input.failed_slices
+        assert_equal 0,           @job.input.count
+        assert_equal 0,           @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
         assert_equal true, @job.completed?
-        assert_equal @lines.size, @job.output.total_slices
+        assert_equal @lines.size, @job.output.count
         RocketJob::Job.find(@job.id)
       end
 
@@ -146,13 +146,13 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         @job.output.each_record do |record|
           count += 1
         end
-        assert_equal 0, @job.input.failed_slices
+        assert_equal 0, @job.input.failed_count
         assert_equal true, @job.completed?
-        assert_equal 0, @job.output.total_slices
+        assert_equal 0, @job.output.count
         assert_equal 0, count
         assert_equal nil, RocketJob::Job.where(id: @job.id).first
       end
@@ -168,32 +168,32 @@ class SlicedJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work(@server)
-        assert_equal @lines.size, @job.input.failed_slices
-        assert_equal 0, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal @lines.size, @job.input.failed_count
+        assert_equal 0, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal false, @job.completed?
 
         # Should not process failed jobs
         @job.work(@server)
-        assert_equal @lines.size, @job.input.failed_slices
-        assert_equal 0, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal @lines.size, @job.input.failed_count
+        assert_equal 0, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal false, @job.completed?
 
         # Make records available for processing again
-        @job.input.requeue_failed_slices
+        @job.input.requeue_failed_count
 
         # Re-process the failed jobs
         @job.perform_method = :perform
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
-        assert_equal @lines.size, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count, failures
+        assert_equal @lines.size, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?
       end
@@ -216,10 +216,10 @@ class SlicedJobTest < Minitest::Test
 
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
-        assert_equal @lines.size, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count, failures
+        assert_equal @lines.size, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal true, @job.completed?
       end
 
@@ -236,10 +236,10 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices
-        assert_equal @lines.size, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count
+        assert_equal @lines.size, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal true, @job.failed?
         assert_equal :after, @job.sub_state
 
@@ -250,10 +250,10 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
-        assert_equal @lines.size, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count, failures
+        assert_equal @lines.size, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal true, @job.completed?, @job.state
         assert_equal nil, @job.sub_state
       end
@@ -269,10 +269,10 @@ class SlicedJobTest < Minitest::Test
 
         # New jobs should fail
         @job.work(@server)
-        assert_equal 0, @job.input.failed_slices
-        assert_equal 0, @job.output.total_slices
-        assert_equal @lines.size, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count
+        assert_equal 0, @job.output.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal true, @job.failed?
         assert_equal :before, @job.sub_state
 
@@ -283,10 +283,10 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
-        assert_equal @lines.size, @job.output.total_slices
-        assert_equal 0, @job.input.queued_slices
-        assert_equal 0, @job.input.active_slices
+        assert_equal 0, @job.input.failed_count, failures
+        assert_equal @lines.size, @job.output.count
+        assert_equal 0, @job.input.queued_count
+        assert_equal 0, @job.input.active_count
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
       end
@@ -305,14 +305,14 @@ class SlicedJobTest < Minitest::Test
         str = ""
         stream = StringIO.new(str)
         @job.upload(stream, format: :text)
-        assert_equal 0, @job.input.total_slices
+        assert_equal 0, @job.input.count
       end
 
       should 'handle a stream consisting only of the delimiter' do
         str = "\n"
         stream = StringIO.new(str)
         @job.upload(stream, format: :text)
-        assert_equal 1, @job.input.total_slices
+        assert_equal 1, @job.input.count
         @job.input.each_slice do |record, header|
           assert_equal [''], record
         end
@@ -322,7 +322,7 @@ class SlicedJobTest < Minitest::Test
         str = @lines.join("\n")
         stream = StringIO.new(str)
         @job.upload(stream, format: :text)
-        assert_equal 1, @job.input.total_slices
+        assert_equal 1, @job.input.count
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
@@ -344,7 +344,7 @@ class SlicedJobTest < Minitest::Test
         str = "hello"
         stream = StringIO.new(str)
         @job.upload(stream, format: :text)
-        assert_equal 1, @job.input.total_slices
+        assert_equal 1, @job.input.count
         @job.input.each_slice do |record, header|
           assert_equal [str], record
         end
@@ -355,7 +355,7 @@ class SlicedJobTest < Minitest::Test
         str << "\r\n"
         stream = StringIO.new(str)
         @job.upload(stream, format: :text)
-        assert_equal 1, @job.input.total_slices
+        assert_equal 1, @job.input.count
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
@@ -366,7 +366,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -379,7 +379,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = @lines.size
         @job.upload(stream, format: :text)
-        assert_equal 1, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal 1, @job.input.count, @job.input.collection.find.to_a
         @job.input.each_slice do |record, header|
           assert_equal @lines, record
         end
@@ -390,7 +390,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, delimiter: '$', format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -404,7 +404,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, delimiter: delimiter, format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -419,7 +419,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -438,7 +438,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -458,7 +458,7 @@ class SlicedJobTest < Minitest::Test
         stream = StringIO.new(str)
         @job.slice_size = 1
         @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.total_slices, @job.input.collection.find.to_a
+        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
         index = 0
         @job.input.each_slice do |record, header|
           assert_equal [ @lines[index] ], record
@@ -506,7 +506,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal 1, count
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         assert_equal true, @job.completed?
 
         stream = StringIO.new('')
@@ -522,7 +522,7 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         assert_equal true, @job.completed?
         stream = StringIO.new('')
         @job.download(stream, format: :text)
@@ -538,7 +538,7 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.download(stream, format: :text)
@@ -554,7 +554,7 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')
         @job.download(stream, format: :text)
@@ -571,7 +571,7 @@ class SlicedJobTest < Minitest::Test
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, h| failures << { header: h, record: r } }
-        assert_equal 0, @job.input.failed_slices, failures
+        assert_equal 0, @job.input.failed_count, failures
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
         stream = StringIO.new('')

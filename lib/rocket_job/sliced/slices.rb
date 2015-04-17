@@ -2,6 +2,7 @@ module RocketJob
   module Sliced
     class Slices
       include Enumerable
+      include SemanticLogger::Loggable
 
       attr_accessor :encrypt, :compress, :slice_size
       attr_reader :collection
@@ -59,23 +60,54 @@ module RocketJob
         Slice.from_bson(doc) if doc
       end
 
+      # Returns [Slice] with the matching id from the collection
+      # Returns nil if the slice was not found
+      #
+      # Note:
+      #  If the id is a valid BSON::ObjectId string it will be converted to a
+      #  BSON::ObjectId before performing the lookup
+      def find(id)
+        id = BSON::ObjectId.from_string(id) if !id.is_a?(BSON::ObjectId) && BSON::ObjectId.legal?(id)
+        doc = collection.find_one(id)
+        Slice.from_bson(doc) if doc
+      end
+
       # Insert a new slice into the collection
       #
       # Returns [Integer] the number of records uploaded
       #
       # Parameters
-      #   slice [RocketJob::Sliced::Slice]
+      #   slice [RocketJob::Sliced::Slice | Array]
       #     The slice to write to the slices collection
       #     If slice is an Array, it will be converted to a Slice before inserting
       #     into the slices collection
+      #
+      #   input_slice [RocketJob::Sliced::Slice]
+      #     The input slice to which this slice corresponds
+      #     The id of the input slice is copied across
+      #     If the insert results in a duplicate record it is ignored, to support
+      #     restarting of jobs that failed in the middle of processing.
+      #     A warning is logged that the slice has already been processed.
       #
       # Note:
       #   `slice_size` is not enforced.
       #   However many records are present in the slice will be written as a
       #   slingle slice to the slices collection
-      def insert(slice)
+      def insert(slice, input_slice=nil)
         slice = Slice.new(records: slice) unless slice.is_a?(Slice)
-        collection.insert(slice.to_bson(encrypt: encrypt, compress: compress))
+        if input_slice
+          # Retain input_slice id in the new output slice
+          slice.id = input_slice.id
+          begin
+            collection.insert(slice.to_bson(encrypt: encrypt, compress: compress))
+          rescue Mongo::OperationFailure, Mongo::ConnectionFailure => exc
+            # Ignore duplicates since it means the job was restarted
+            raise(exc) unless exc.message.include?('E11000')
+            logger.warn "Skipped already processed slice# #{slice.id}"
+          end
+        else
+          collection.insert(slice.to_bson(encrypt: encrypt, compress: compress))
+        end
         slice
       end
       alias_method :<<, :insert
@@ -91,8 +123,13 @@ module RocketJob
       end
 
       # Drop this collection since it is no longer needed
-      def destroy
+      def drop
         collection.drop
+      end
+
+      # Clear out the slices in this collection
+      def clear
+        collection.remove({})
       end
 
     end
