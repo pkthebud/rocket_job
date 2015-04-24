@@ -32,12 +32,30 @@ module RocketJob
     # method when it returns `nil`.
     key :collect_nil_output,      Boolean, default: true
 
+    # Maximum number of workers actively processing slices for this job.
     #
-    # Values that jobs can update during processing
+    # It attempts to ensure that the number of workers do not exceed this number.
+    # This is not a hard limit and it is possible for the number of workers to
+    # slightly exceed this value at times. It can also occur that the number of
+    # slices running can drop below this number for a short period.
+    #
+    # This value can be modified while a job is running. The change will be picked
+    # up at the start of processing slices, or after processing a slice and
+    # `re_check_seconds` has been exceeded.
+    #
+    # Default: nil - No limits in place
+    key :max_active_workers,      Integer
+
+    #
+    # Values that jobs can also update during processing
     #
 
     # Number of records in this job
     key :record_count,            Integer, default: 0
+
+    #
+    # Read-only attributes
+    #
 
     # Breaks the :running state up into multiple sub-states:
     #   :running -> :before -> :processing -> :after -> :complete
@@ -46,11 +64,6 @@ module RocketJob
     after_destroy :cleanup!
 
     validates_presence_of :record_count, :slice_size
-
-    # Returns [true|false] whether to collect the results from running this batch
-    def collect_output?
-      collect_output == true
-    end
 
     # Returns [true|false] whether to collect nil results from running this batch
     def collect_nil_output?
@@ -64,13 +77,13 @@ module RocketJob
     #     The named input source when multiple inputs are being processed
     #     Default: None ( Uses the single default input collection for this job )
     def input(name=nil)
-      collection_name = "rocket_job.inputs.#{id.to_s}"
+      collection_name = "rocket_job.inputs.#{id}"
       collection_name << ".#{name}" if name
-      (@inputs ||= {})[name] = RocketJob::Sliced::Slices.new(self,
-        name:               collection_name,
-        encrypt:            job.encrypt,
-        compress:           job.compress,
-        slice_size:         job.slice_size
+      (@inputs ||= {})[name] = RocketJob::Sliced::Input.new(
+        name:       collection_name,
+        encrypt:    encrypt,
+        compress:   compress,
+        slice_size: slice_size
       )
     end
 
@@ -82,13 +95,13 @@ module RocketJob
     #     The named output storage when multiple outputs are being generated
     #     Default: None ( Uses the single default output collection for this job )
     def output(name=nil)
-      collection_name = "rocket_job.outputs.#{job.id.to_s}"
+      collection_name = "rocket_job.outputs.#{id}"
       collection_name << ".#{name}" if name
-      (@outputs ||= {})[name] = RocketJob::Sliced::Slices.new(self,
-        name:               collection_name,
-        encrypt:            job.encrypt,
-        compress:           job.compress,
-        slice_size:         job.slice_size
+      (@outputs ||= {})[name] = RocketJob::Sliced::Output.new(
+        name:       collection_name,
+        encrypt:    encrypt,
+        compress:   compress,
+        slice_size: slice_size
       )
     end
 
@@ -125,7 +138,8 @@ module RocketJob
     # Note:
     #   Not thread-safe. Only call from one thread at a time
     def upload_slice(slice)
-      count = input.insert(slice)
+      input.insert(slice)
+      count = slice.size
       self.record_count += count
       count
     end
@@ -201,13 +215,18 @@ module RocketJob
           return 0
         end
         start_time = Time.now
-        while slice = input.next_slice(server.name)
+        loop do
+          return count if max_active_workers && (active_count >= max_active_workers)
+
+          slice = input.next_slice(server.name)
+          break unless slice
           count += slice.size
           count += process_slice(worker, slice)
+
           # TODO Protect with a Mutex
-          break if !server.running?
+          return count if !server.running?
           # Allow new jobs with a higher priority to interrupt this job worker
-          break if (Time.now - start_time) >= Config.instance.re_check_seconds
+          return count if (Time.now - start_time) >= Config.instance.re_check_seconds
         end
         # Don't check if not everything has finished processing
         check_completion(worker)
@@ -241,41 +260,41 @@ module RocketJob
     def percent_complete
       return 100 if completed?
       return 0 unless record_count.to_i > 0
-      ((output.total_slices.to_f / record_count) * 100).round
+      ((output.count.to_f / record_count) * 100).round
     end
 
     # Returns [Hash] status of this job
     def status(time_zone='EST')
       # TODO Add sub-state
       h = super(time_zone)
+      h[:record_count] = record_count
       case
-      when running? || paused?
-        h[:active_slices]    = input.active_slices
-        h[:failed_slices]    = input.failed_slices
-        h[:queued_slices]    = input.queued_slices
-        h[:output_slices]    = output.total_slices
-        h[:record_count]     = record_count
-        input_slices         = h[:active_slices] + h[:failed_slices] + h[:queued_slices]
+      when running? || paused? || failed?
+        h[:active_slices]    = input.active_count
+        h[:failed_slices]    = input.failed_count
+        h[:queued_slices]    = input.queued_count
+        h[:output_slices]    = output.count if collect_output?
+        input_slices         = h[:running_slices] + h[:failed_slices] + h[:queued_slices]
         # Approximate number of input records
         input_records        = input_slices.to_f * slice_size
         h[:percent_complete] = ((1.0 - (input_records.to_f / record_count)) * 100).to_i if record_count > 0
-        h[:records_per_hour] = (((record_count - input_records) / h[:seconds]) * 60 * 60).round if record_count > 0
-        h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
+        # TODO seconds has been replaced with duration
+        #h[:records_per_hour] = (((record_count - input_records) / h[:seconds]) * 60 * 60).round if record_count > 0
+        #h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
       when completed?
         h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
-        h[:record_count]     = record_count
-        h[:output_slices]    = output.total_slices
+        count = output.count if collect_output?
+        h[:output_slices]    = count if count
       when queued?
-        h[:queued_slices]    = input.total_slices
-        h[:record_count]     = record_count
+        h[:queued_slices]    = input.count
       end
       h
     end
 
     # Drop the input and output collections
     def cleanup!
-      input.cleanup!
-      output.cleanup!
+      input.drop
+      output.drop
     end
 
     # Is this job still being processed
@@ -324,7 +343,7 @@ module RocketJob
 
     # Checks for completion and runs after_perform if defined
     def check_completion(worker)
-      return unless record_count && (input.total_slices == 0)
+      return unless record_count && (input.count == 0)
       # Run after_perform, only if it has not already been run by another worker
       # and prevent other workers from also completing it
       if result = collection.update({ '_id' => id, 'state' => :running, 'sub_state' => :processing }, { '$set' => { 'sub_state' => :after }})
@@ -380,7 +399,7 @@ module RocketJob
 
         # On successful completion remove the slice from the input queue
         # TODO Option to set it to completed instead of destroying it
-        input.remove_slice(slice)
+        input.remove(slice)
       end
     rescue Exception => exc
       slice.failure(exc, record_number)

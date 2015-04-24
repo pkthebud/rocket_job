@@ -29,6 +29,25 @@ module RocketJob
       include MongoMapper::Document
       include AASM
 
+      #
+      # Read-only attributes
+      #
+
+      # Current state, as set by AASM
+      key :state,                   Symbol, default: :queued
+
+      # When processing started on this slice
+      key :started_at,              Time
+
+      # Number of times that this job has failed to process
+      key :failure_count,           Integer
+
+      # This name of the server that this job is being processed by, or was processed by
+      key :server_name,             String
+
+      # The last exception for this slice if any
+      one :exception,               class_name: 'RocketJob::JobException'
+
       # State Machine events and transitions
       #
       # Each slice is processed separately:
@@ -53,7 +72,7 @@ module RocketJob
         # Job failed to process and needs to be manually re-tried or aborted
         state :failed
 
-        event :start do
+        event :start, before: :before_start do
           transitions from: :queued, to: :running
         end
 
@@ -61,30 +80,14 @@ module RocketJob
           transitions from: :running, to: :completed
         end
 
-        event :fail  do
+        event :fail do
           transitions from: :running, to: :failed
         end
 
-        event :retry  do
+        event :retry do
           transitions from: :failed, to: :queued
         end
       end
-
-      #
-      # Read-only attributes
-      #
-
-      # Current state, as set by AASM
-      key :state,                   Symbol, default: :queued
-
-      # Number of times that this job has failed to process
-      key :failure_count,           Integer
-
-      # This name of the server that this job is being processed by, or was processed by
-      key :server_name,             String
-
-      # The last exception for this slice if any
-      one :exception,               class_name: 'RocketJob::JobException'
 
       # Alternative way to replace the records within this slice
       def records=(records)
@@ -159,6 +162,14 @@ module RocketJob
 
       def inspect
         "#<#{self.class.name} #{attributes.collect{|k,v| "#{k.inspect}=>#{v.inspect}"}.join(' ')}> #{to_a.inspect}"
+      end
+
+      #############################################################################
+      protected
+
+      # Before events that can be overridden by child classes
+      def before_start
+        self.started_at = Time.now
       end
 
       #############################################################################

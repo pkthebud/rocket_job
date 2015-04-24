@@ -145,7 +145,7 @@ module RocketJob
       end
 
       # Returns [Integer] the number of slices currently being processed
-      def running_count
+      def active_count
         collection.count(query: { 'state' => 'running' })
       end
 
@@ -205,7 +205,7 @@ module RocketJob
         if doc = collection.find_and_modify(
             query:  { 'state' => 'queued' },
             sort:   '_id',
-            update: { '$set' => { 'server_name' => server_name, 'state' => 'running' } }
+            update: { '$set' => { 'server_name' => server_name, 'state' => 'running', 'started_at' => Time.now } }
           )
           slice = Slice.from_bson(doc)
           # Also update in-memory state and run call-backs
@@ -270,7 +270,8 @@ module RocketJob
               batch_count += 1
               if batch_count >= slice_size
                 # Write to Mongo
-                record_count += upload_slice(slice)
+                insert(slice)
+                record_count += slice.size
                 batch_count = 0
                 slice.clear
               end
@@ -287,7 +288,10 @@ module RocketJob
         slice << buffer if buffer.size > 0
 
         # Write partial record to Mongo
-        record_count += upload_slice(slice) if slice.size > 0
+        if slice.size > 0
+          insert(slice)
+          record_count += slice.size
+        end
 
         record_count
       end

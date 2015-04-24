@@ -24,6 +24,10 @@ module Sliced
       end
 
       context '#upload' do
+        setup do
+          skip
+        end
+
         context 'file' do
           should 'text' do
           end
@@ -106,54 +110,54 @@ module Sliced
           assert_equal 3, @input.size
 
           assert_equal 3, @input.queued_count
-          assert_equal 0, @input.running_count
+          assert_equal 0, @input.active_count
           assert_equal 0, @input.failed_count
 
           assert slice = @input.next_slice(@server_name)
           assert_equal @first.id, slice.id
           assert_equal true, slice.running?
           assert_equal 2, @input.queued_count
-          assert_equal 1, @input.running_count
+          assert_equal 1, @input.active_count
           assert_equal 0, @input.failed_count
 
           assert slice = @input.next_slice(@server_name)
           assert_equal @second.id, slice.id
           assert_equal true, slice.running?
           assert_equal 1, @input.queued_count
-          assert_equal 2, @input.running_count
+          assert_equal 2, @input.active_count
           assert_equal 0, @input.failed_count
 
           slice.failure
           @input.update(slice)
           failed_slice = slice
           assert_equal 1, @input.queued_count
-          assert_equal 1, @input.running_count
+          assert_equal 1, @input.active_count
           assert_equal 1, @input.failed_count
 
           assert slice = @input.next_slice(@server_name)
           assert_equal @third.id, slice.id
           assert_equal true, slice.running?
           assert_equal 0, @input.queued_count
-          assert_equal 2, @input.running_count
+          assert_equal 2, @input.active_count
           assert_equal 1, @input.failed_count
 
           assert_equal nil, @input.next_slice(@server_name)
           assert_equal 0, @input.queued_count
-          assert_equal 2, @input.running_count
+          assert_equal 2, @input.active_count
           assert_equal 1, @input.failed_count
 
           failed_slice.retry
           @input.update(failed_slice)
           assert_equal true, failed_slice.queued?
           assert_equal 1, @input.queued_count
-          assert_equal 2, @input.running_count
+          assert_equal 2, @input.active_count
           assert_equal 0, @input.failed_count
 
           assert slice = @input.next_slice(@server_name)
           assert_equal @second.id, slice.id
           assert_equal true, slice.running?
           assert_equal 0, @input.queued_count
-          assert_equal 3, @input.running_count
+          assert_equal 3, @input.active_count
           assert_equal 0, @input.failed_count
         end
       end
@@ -221,13 +225,13 @@ module Sliced
           @input.update(@second)
 
           assert_equal 2, @input.queued_count
-          assert_equal 0, @input.running_count
+          assert_equal 0, @input.active_count
           assert_equal 1, @input.failed_count
 
           assert_equal 1, @input.requeue_failed
 
           assert_equal 3, @input.queued_count
-          assert_equal 0, @input.running_count
+          assert_equal 0, @input.active_count
           assert_equal 0, @input.failed_count
         end
       end
@@ -249,13 +253,13 @@ module Sliced
           assert_equal 3, @input.size
 
           assert_equal 1, @input.queued_count
-          assert_equal 2, @input.running_count
+          assert_equal 2, @input.active_count
           assert_equal 0, @input.failed_count
 
           assert_equal 1, @input.requeue_running(@server_name)
 
           assert_equal 2, @input.queued_count
-          assert_equal 1, @input.running_count
+          assert_equal 1, @input.active_count
           assert_equal 0, @input.failed_count
         end
       end

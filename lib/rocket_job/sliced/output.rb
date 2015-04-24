@@ -3,9 +3,7 @@ require 'tempfile'
 
 module RocketJob
   module Sliced
-    class Output < Base
-      attr_reader :collection
-
+    class Output < Slices
       # Read output data and write it into the supplied filename or stream
       # The records are returned in '_id' order. Usually this is the order in
       # which the records were originally loaded.
@@ -96,7 +94,7 @@ module RocketJob
 
         # Common writer to write data from this collection to the supplied stream
         writer = -> io do
-          each_slice do |slice, _|
+          each do |slice, _|
             # TODO Currently only supports text streams. Add support for binary data
             io.write(slice.join(delimiter) + delimiter)
             record_count += slice.size
