@@ -113,9 +113,11 @@ class SlicedJobTest < Minitest::Test
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
-        @job.output.each_record do |record|
-          assert_equal @lines[count], record
-          count += 1
+        @job.output.each do |slice|
+          slice.each do |record|
+            assert_equal @lines[count], record
+            count += 1
+          end
         end
 
         assert_equal @lines.size, count
@@ -145,13 +147,15 @@ class SlicedJobTest < Minitest::Test
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
-        @job.output.each_record do |record|
-          count += 1
+        @job.output.each do |slice|
+          slice.each do |record|
+            count += 1
+          end
         end
         assert_equal 0, @job.input.failed_count
         assert_equal true, @job.completed?
         assert_equal 0, @job.output.count
-        assert_equal 0, count
+        assert_equal 0, @job.output.count
         assert_equal nil, RocketJob::Job.where(id: @job.id).first
       end
 
@@ -181,7 +185,8 @@ class SlicedJobTest < Minitest::Test
         assert_equal false, @job.completed?
 
         # Make records available for processing again
-        @job.input.requeue_failed_count
+        assert_equal @lines.size, @job.input.requeue_failed
+        assert_equal 0, @job.input.failed_count, @job.input.first.inspect
 
         # Re-process the failed jobs
         @job.perform_method = :perform
@@ -313,7 +318,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal 1, @job.input.count
         @job.input.each do |slice|
           slice.each do |record |
-            assert_equal [''], record
+            assert_equal '', record
           end
         end
       end
@@ -324,9 +329,7 @@ class SlicedJobTest < Minitest::Test
         @job.upload(stream, format: :text)
         assert_equal 1, @job.input.count
         @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal @lines, record
-          end
+          assert_equal @lines, slice.records
         end
       end
 
@@ -348,8 +351,8 @@ class SlicedJobTest < Minitest::Test
         @job.upload(stream, format: :text)
         assert_equal 1, @job.input.count
         @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal stream, record
+          slice.each do |record|
+            assert_equal stream.string, record
           end
         end
       end
@@ -361,9 +364,7 @@ class SlicedJobTest < Minitest::Test
         @job.upload(stream, format: :text)
         assert_equal 1, @job.input.count
         @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal @lines, record
-          end
+          assert_equal @lines, slice.records
         end
       end
 
@@ -424,68 +425,6 @@ class SlicedJobTest < Minitest::Test
         end
       end
 
-      should 'compress records' do
-        @job.compress = true
-
-        str = @lines.join("\n")
-        stream = StringIO.new(str)
-        @job.slice_size = 1
-        @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
-        index = 0
-        @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal @lines[index], record
-            index += 1
-          end
-        end
-        # Confirm that the slice stored was actually compressed
-        message = @job.input.collection.find.sort('_id').limit(1).first
-        slice   = message['slice'].to_s
-        assert_equal Zlib::Deflate.deflate(@lines.first), slice, Zlib::Inflate.inflate(slice)
-      end
-
-      should 'encrypt records' do
-        @job.encrypt = true
-
-        str = @lines.join("\n")
-        stream = StringIO.new(str)
-        @job.slice_size = 1
-        @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
-        index = 0
-        @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal @lines[index], record
-            index += 1
-          end
-        end
-        # Confirm that the slice stored was actually encrypted
-        slice = @job.input.first
-        assert_equal @lines.first, SymmetricEncryption.cipher.binary_decrypt(slice)
-      end
-
-      should 'compress and encrypt records' do
-        @job.encrypt = true
-        @job.compress = true
-
-        str = @lines.join("\n")
-        stream = StringIO.new(str)
-        @job.slice_size = 1
-        @job.upload(stream, format: :text)
-        assert_equal @lines.size, @job.input.count, @job.input.collection.find.to_a
-        index = 0
-        @job.input.each do |slice|
-          slice.each do |record |
-            assert_equal @lines[index], record
-            index += 1
-          end
-        end
-        # Confirm that the slice stored was actually compressed & encrypted
-        slice = @job.input.first
-        assert_equal @lines.first, SymmetricEncryption.cipher.binary_decrypt(slice)
-      end
-
     end
 
     context '#download' do
@@ -505,9 +444,11 @@ class SlicedJobTest < Minitest::Test
         @job.upload_slice([ @lines.first ])
         @job.upload_slice([ @lines.second ])
         @job.start!
+        count = 0
         # Make worker only process one entry
-        @server.stop!
-        count = @job.work(@server)
+        RocketJob::Config.instance.stub(:re_check_seconds, 0) do
+          count = @job.work(@server)
+        end
         assert_equal 1, count
 
         stream = StringIO.new('')
@@ -544,57 +485,6 @@ class SlicedJobTest < Minitest::Test
         @job.download(stream, format: :text)
         assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
       end
-
-      should 'decompress results' do
-        @job.compress = true
-        @job.slice_size = 1
-        slices = @lines.dup
-        @job.upload_records { slices.shift }
-        @job.start!
-        @job.work(@server)
-        failures = []
-        @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
-        assert_equal 0, @job.input.failed_count, failures
-        assert_equal true, @job.completed?, @job.inspect
-        stream = StringIO.new('')
-        @job.download(stream, format: :text)
-        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
-      end
-
-      should 'decrypt results' do
-        @job.encrypt = true
-        @job.slice_size = 1
-        slices = @lines.dup
-        @job.upload_records { slices.shift }
-        @job.start!
-        @job.work(@server)
-        failures = []
-        @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
-        assert_equal 0, @job.input.failed_count, failures
-        assert_equal true, @job.completed?, @job.state
-        stream = StringIO.new('')
-        @job.download(stream, format: :text)
-        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
-      end
-
-      should 'decompress & decrypt results' do
-        @job.compress = true
-        @job.encrypt = true
-        @job.slice_size = 1
-        slices = @lines.dup
-        @job.upload_records { slices.shift }
-        @job.start!
-        @job.work(@server)
-        failures = []
-        @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
-        assert_equal 0, @job.input.failed_count, failures
-        assert_equal nil, @job.sub_state
-        assert_equal true, @job.completed?, @job.state
-        stream = StringIO.new('')
-        @job.download(stream, format: :text)
-        assert_equal @lines.join("\n") + "\n", stream.string, stream.string.inspect
-      end
-
     end
 
     context '.config' do

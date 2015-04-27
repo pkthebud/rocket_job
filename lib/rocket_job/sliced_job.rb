@@ -216,15 +216,15 @@ module RocketJob
         end
         start_time = Time.now
         loop do
+          # TODO Protect with a Mutex
+          return count if !server.running?
           return count if max_active_workers && (active_count >= max_active_workers)
 
           slice = input.next_slice(server.name)
           break unless slice
           count += slice.size
-          count += process_slice(worker, slice)
+          process_slice(worker, slice)
 
-          # TODO Protect with a Mutex
-          return count if !server.running?
           # Allow new jobs with a higher priority to interrupt this job worker
           return count if (Time.now - start_time) >= Config.instance.re_check_seconds
         end

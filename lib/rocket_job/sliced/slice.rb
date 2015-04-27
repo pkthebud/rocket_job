@@ -139,7 +139,7 @@ module RocketJob
       # Returns [Slice] The decompressed / un-encrypted data string if applicable
       def self.from_bson(doc)
         # Extract the records from doc
-        records = doc.delete('records') || doc.delete('slice')
+        records = doc.delete('records')
 
         slice = new
         slice.send(:load_from_database, doc)

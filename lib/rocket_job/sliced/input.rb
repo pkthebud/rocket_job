@@ -180,7 +180,8 @@ module RocketJob
         result = collection.update(
           { 'state' => 'failed' },
           { '$unset' => { 'server_name' => true, 'started_at' => true },
-            '$set'   => { 'state' => 'queued' } }
+            '$set'   => { 'state' => 'queued' } },
+          multi: true
         )
         result['nModified'] || result['n'] || 0
       end

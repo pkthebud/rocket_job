@@ -94,8 +94,7 @@ module RocketJob
 
         # Common writer to write data from this collection to the supplied stream
         writer = -> io do
-          each do |slice, _|
-            # TODO Currently only supports text streams. Add support for binary data
+          each do |slice|
             io.write(slice.join(delimiter) + delimiter)
             record_count += slice.size
           end
