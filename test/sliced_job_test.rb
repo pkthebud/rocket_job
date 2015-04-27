@@ -175,8 +175,11 @@ class SlicedJobTest < Minitest::Test
         assert_equal 0, @job.input.queued_count
         assert_equal 0, @job.input.active_count
         assert_equal false, @job.completed?
+        # Since all slices have failed, it should automatically transition to failed
+        assert_equal true, @job.failed?
 
         # Should not process failed jobs
+        @job.retry!
         @job.work(@server)
         assert_equal @lines.size, @job.input.failed_count
         assert_equal 0, @job.output.count
@@ -190,6 +193,7 @@ class SlicedJobTest < Minitest::Test
 
         # Re-process the failed jobs
         @job.perform_method = :perform
+        @job.retry!
         @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
@@ -214,6 +218,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         @job.work(@server)
+        assert_equal true, @job.completed?, @job.inspect
         assert_equal named_parameters.merge('before_event' => true, 'after_event' => true), @job.arguments.first
         assert_equal nil, @job.sub_state
 
@@ -460,7 +465,7 @@ class SlicedJobTest < Minitest::Test
         @job.upload_slice([ @lines.first ])
         @job.start!
         count = @job.work(@server)
-        assert_equal 1, count
+        assert_equal 1, count, @job.inspect
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures

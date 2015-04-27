@@ -11,19 +11,19 @@ module Workers
       job.destroy_on_complete = false
     end
 
-    def perform(record, header)
+    def perform(record)
       record
     end
 
-    def reverse(record, header)
+    def reverse(record)
       record.reverse
     end
 
-    def oh_no(record, header)
+    def oh_no(record)
       raise 'Oh no'
     end
 
-    def able(record, header)
+    def able(record)
       record
     end
 
@@ -45,7 +45,7 @@ module Workers
       end
     end
 
-    def probable(record, header)
+    def probable(record)
       record
     end
 
@@ -53,8 +53,8 @@ module Workers
       hash['before_event'] = true
     end
 
-    def event(hash, record, header)
-      raise "Missing header" unless hash['before_event']
+    def event(hash, record)
+      raise "Missing slice" unless hash['before_event']
       record
     end
 

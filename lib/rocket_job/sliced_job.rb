@@ -206,11 +206,11 @@ module RocketJob
         # If this is the first worker to pickup this job
         if before_processing?
           # before_perform
-          call_method(worker, :before)
+          worker.rocket_job_call(perform_method, arguments, event: :before, log_level: log_level)
           processing!
         elsif after_processing?
           # previous after_perform failed
-          call_method(worker, :after)
+          worker.rocket_job_call(perform_method, arguments, event: :after, log_level: log_level)
           complete!
           return 0
         end
@@ -219,23 +219,26 @@ module RocketJob
           # TODO Protect with a Mutex
           return count if !server.running?
           return count if max_active_workers && (active_count >= max_active_workers)
-
           slice = input.next_slice(server.name)
           break unless slice
-          count += slice.size
-          process_slice(worker, slice)
+          count += process_slice(worker, slice)
+
+          # If the slice has failed and there are no other queued slices, fail the job
+          if slice.failed? && (input.queued_count == 0)
+            fail!
+            return count
+          end
 
           # Allow new jobs with a higher priority to interrupt this job worker
           return count if (Time.now - start_time) >= Config.instance.re_check_seconds
         end
         # Don't check if not everything has finished processing
         check_completion(worker)
-        count
       rescue Exception => exc
         set_exception(server.name, exc)
         raise exc if RocketJob::Config.inline_mode
-        count
       end
+      count
     end
 
     # Prior to a job being made available for processing it can be processed one
@@ -351,7 +354,7 @@ module RocketJob
           # Also update the in-memory value
           self.sub_state = :after
           # after_perform
-          call_method(worker, :after)
+          worker.rocket_job_call(perform_method, arguments, event: :after, log_level: log_level)
           complete!
         end
       else
@@ -363,8 +366,9 @@ module RocketJob
     # Process a single message from Mongo
     # A message consists of a header and the slice of records to process
     # If the message is successfully processed it will be removed from the input collection
+    # Returns [Integer] the number of records successfully processed
     def process_slice(worker, slice, &block)
-      record_number       = 0
+      record_number = 0
       logger.tagged("Slice #{slice.id}") do
         logger.info "Start #{klass}##{perform_method}"
         output_records = logger.benchmark_info(
@@ -374,17 +378,19 @@ module RocketJob
           on_exception_level: :error,
           silence:            log_level
         ) do
-          slice.collect do |record|
+          worker.rocket_job_slice = slice
+          results = slice.collect do |record|
             record_number += 1
             logger.tagged("Rec #{record_number}") do
               if block
                 block.call(*arguments, record, slice)
               else
-                # perform
-                worker.send(perform_method, *arguments, record, slice)
+                worker.send(perform_method, *arguments, record)
               end
             end
           end
+          worker.rocket_job_slice = nil
+          results
         end
 
         if collect_output?
@@ -401,11 +407,12 @@ module RocketJob
         # TODO Option to set it to completed instead of destroying it
         input.remove(slice)
       end
+      record_number
     rescue Exception => exc
       slice.failure(exc, record_number)
       input.update(slice)
       raise exc if RocketJob::Config.inline_mode
-      record_number
+      record_number > 0 ? record_number - 1 : 0
     end
 
     protected

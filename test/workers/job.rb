@@ -27,5 +27,17 @@ module Workers
       logger.trace 'enable tracing level for just the job instance'
     end
 
+    def before_event(hash)
+      hash['before_event'] = true
+    end
+
+    def event(hash)
+      hash['event'] = true
+    end
+
+    def after_event(hash)
+      hash['after_event'] = true
+    end
+
   end
 end
