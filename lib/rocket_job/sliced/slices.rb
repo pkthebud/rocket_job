@@ -45,7 +45,6 @@ module RocketJob
       end
 
       # Returns [Slice] the first slice in the collection
-      # and the header for that slice
       # Returns nil if the collection does not contain any slices
       def first
         doc = collection.find_one({}, sort: [['_id', Mongo::ASCENDING]])
@@ -53,7 +52,6 @@ module RocketJob
       end
 
       # Returns [Slice] the last slice in the collection
-      # and the header for that slice
       # Returns nil if the collection does not contain any slices
       def last
         doc = collection.find_one({}, sort: [['_id', Mongo::DESCENDING]])

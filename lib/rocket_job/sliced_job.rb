@@ -246,16 +246,16 @@ module RocketJob
     #
     # For example, to extract the header row which would be in the first slice.
     #
+    # Returns [Integer] the number of records processed in the slice
+    #
     # Note: The slice will be removed from processing when this method completes
     def work_first_slice(worker, &block)
       raise 'Job must be running and in :before sub_state when calling #before_work' unless before_processing?
-      processed_record_count = 0
-      if message = input.collection.find.sort('_id').limit(1).first
-        input_slice, header = input.parse_message(message)
-        processed_record_count = input_slice.size
-        process_slice(worker, input_slice, header, &block)
+      if slice = input.first
+        process_slice(worker, slice, &block)
+      else
+        0
       end
-      processed_record_count
     end
 
     # Returns [Integer] percent of records completed so far
@@ -363,9 +363,8 @@ module RocketJob
       end
     end
 
-    # Process a single message from Mongo
-    # A message consists of a header and the slice of records to process
-    # If the message is successfully processed it will be removed from the input collection
+    # Process a single slice from Mongo
+    # Once the slice has been successfully processed it will be removed from the input collection
     # Returns [Integer] the number of records successfully processed
     def process_slice(worker, slice, &block)
       record_number = 0

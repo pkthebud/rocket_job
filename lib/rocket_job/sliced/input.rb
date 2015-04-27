@@ -163,7 +163,7 @@ module RocketJob
 
       # Iterate over each failed record, if any
       # Since each slice can only contain 1 failed record, only the failed
-      # record is returned along with the header containing the exception
+      # record is returned along with the slice containing the exception
       # details
       def each_failed_record(&block)
         each('state' => 'failed') do |slice|

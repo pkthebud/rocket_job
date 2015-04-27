@@ -79,17 +79,17 @@ module RocketJob
       end
 
       # No operation, just return the supplied line (record)
-      def perform(line, header)
+      def perform(line)
         line
       end
 
       # Parse supplied line with custom CSV and then just convert back to a CSV string
-      def custom_csv(line, header)
+      def custom_csv(line)
         csv_parser.to_csv(csv_parser.parse(line))
       end
 
       # Parse supplied line with Regular CSV and then just convert back to a CSV string
-      def ruby_csv(line, header)
+      def ruby_csv(line)
         CSV.parse_line(line).to_csv(row_sep: '')
       end
 
