@@ -51,7 +51,12 @@ module RocketJob
     #
 
     # Number of records in this job
-    key :record_count,            Integer, default: 0
+    # Note:
+    #   A record_count of nil means it has not been set and workers will
+    #   _not_ complete the job when processing slices.
+    #   This allows workers to start processing slices while slices are still
+    #   being uploaded
+    key :record_count,            Integer
 
     #
     # Read-only attributes
@@ -63,7 +68,7 @@ module RocketJob
 
     after_destroy :cleanup!
 
-    validates_presence_of :record_count, :slice_size
+    validates_presence_of :slice_size
 
     # Returns [true|false] whether to collect nil results from running this batch
     def collect_nil_output?
@@ -117,7 +122,7 @@ module RocketJob
     #   Not thread-safe. Only call from one thread at a time
     def upload(file_name_or_io, options={})
       count = input.upload(file_name_or_io, options)
-      self.record_count += count
+      self.record_count = (record_count || 0) + count
       count
     end
 
@@ -140,7 +145,7 @@ module RocketJob
     def upload_slice(slice)
       input.insert(slice)
       count = slice.size
-      self.record_count += count
+      self.record_count = (record_count || 0) + count
       count
     end
 
@@ -160,7 +165,7 @@ module RocketJob
     #   Not thread-safe. Only call from one thread at a time
     def upload_records(&block)
       count = input.upload_records(&block)
-      self.record_count += count
+      self.record_count = (record_count || 0) + count
       count
     end
 
@@ -267,11 +272,17 @@ module RocketJob
     end
 
     # Returns [Integer] percent of records completed so far
-    # Returns nil if the total record count has not yet been set
+    # Returns 0 if the total record count has not yet been set
     def percent_complete
       return 100 if completed?
       return 0 unless record_count.to_i > 0
-      ((output.count.to_f / record_count) * 100).round
+      if collect_output?
+        ((output.count.to_f / record_count) * 100).to_i
+      else
+        # Approximate number of input records
+        input_records = input.count.to_f * slice_size
+        ((1.0 - (input_records.to_f / record_count)) * 100).to_i
+      end
     end
 
     # Returns [Hash] status of this job
@@ -285,15 +296,17 @@ module RocketJob
         h[:failed_slices]    = input.failed_count
         h[:queued_slices]    = input.queued_count
         h[:output_slices]    = output.count if collect_output?
-        input_slices         = h[:running_slices] + h[:failed_slices] + h[:queued_slices]
-        # Approximate number of input records
-        input_records        = input_slices.to_f * slice_size
-        h[:percent_complete] = ((1.0 - (input_records.to_f / record_count)) * 100).to_i if record_count > 0
+        h[:percent_complete] = percent_complete
         # TODO seconds has been replaced with duration
-        #h[:records_per_hour] = (((record_count - input_records) / h[:seconds]) * 60 * 60).round if record_count > 0
-        #h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
+        #if record_count
+          #input_slices         = h[:running_slices] + h[:failed_slices] + h[:queued_slices]
+          # Approximate number of input records
+          #input_records        = input_slices.to_f * slice_size
+          #h[:records_per_hour] = (((record_count - input_records) / h[:seconds]) * 60 * 60).round if record_count > 0
+          #h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
+        #end
       when completed?
-        h[:records_per_hour] = ((record_count / h[:seconds]) * 60 * 60).round
+        h[:records_per_hour] = ((record_count.to_f / duration.to_i) * 60 * 60).round if record_count
         count = output.count if collect_output?
         h[:output_slices]    = count if count
       when queued?

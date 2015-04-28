@@ -55,7 +55,7 @@ module RocketJob
       def self.upload(file_name, method = :perform)
         start_time = Time.now
         rocket_job = later(method) do |job|
-          job.record_count = job.input.upload(file_name)
+          job.upload(file_name)
         end
         puts "Loaded #{file_name} in #{Time.now - start_time} seconds"
         rocket_job

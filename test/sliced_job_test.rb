@@ -43,8 +43,8 @@ class SlicedJobTest < Minitest::Test
       end
     end
 
-    context '#write_slice' do
-      should 'write slices' do
+    context '#upload_slice' do
+      should 'upload slices' do
         @job = Workers::SlicedJob.perform_later
         @lines.each { |line| @job.upload_slice([line]) }
 
@@ -56,7 +56,7 @@ class SlicedJobTest < Minitest::Test
       end
     end
 
-    context '#write_records' do
+    context '#upload_records' do
       should 'support slice size of 1' do
         lines = @lines.dup
         count = 0
@@ -99,7 +99,7 @@ class SlicedJobTest < Minitest::Test
 
       should 'read all records' do
         @job = Workers::SlicedJob.perform_later do |job|
-          assert_equal 0, job.record_count
+          assert_equal nil, job.record_count
           # slice_size has no effect since it calling #write_slice directly
           job.slice_size = 1
           @lines.each { |record| job.upload_slice([record]) }
@@ -137,7 +137,7 @@ class SlicedJobTest < Minitest::Test
 
       should 'destroy on completion' do
         @job = Workers::SlicedJob.perform_later do |job|
-          assert_equal 0, job.record_count
+          assert_equal nil, job.record_count
           job.destroy_on_complete = true
           job.slice_size = 1
           @lines.each { |row| job.upload_slice([row]) }
@@ -305,7 +305,7 @@ class SlicedJobTest < Minitest::Test
 
       should "backoff when throttle exceeded" do
         @job = Workers::SlicedJob.perform_later do |job|
-          assert_equal 0, job.record_count
+          assert_equal nil, job.record_count
           # slice_size has no effect since it is calling #write_slice directly
           job.slice_size = 1
           @lines.each { |record| job.upload_slice([record]) }
@@ -332,7 +332,7 @@ class SlicedJobTest < Minitest::Test
 
       should "backoff when no work available" do
         @job = Workers::SlicedJob.perform_later do |job|
-          assert_equal 0, job.record_count
+          assert_equal nil, job.record_count
           # slice_size has no effect since it is calling #write_slice directly
           job.slice_size = 1
           @lines.each { |record| job.upload_slice([record]) }
