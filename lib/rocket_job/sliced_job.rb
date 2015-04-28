@@ -182,8 +182,7 @@ module RocketJob
     # throughput. Processing will continue until there are no more jobs available
     # for this job.
     #
-    # Returns [Integer] the number of records processed
-    # Returns [??] when no slices are available for processing on this job
+    # Returns [true|false] whether this job should be excluded from the next lookup
     #
     # Slices are destroyed after their records are successfully processed
     # TODO Make this an option
@@ -200,7 +199,7 @@ module RocketJob
     # Thread-safe, can be called by multiple threads at the same time
     def work(server)
       raise 'Job must be started before calling #work' unless running?
-      count = 0
+      skip_this_job = false
       begin
         worker = new_worker
         # If this is the first worker to pickup this job
@@ -212,33 +211,42 @@ module RocketJob
           # previous after_perform failed
           worker.rocket_job_call(perform_method, arguments, event: :after, log_level: log_level)
           complete!
-          return 0
+          return false
         end
+
         start_time = Time.now
         loop do
-          # TODO Protect with a Mutex
-          return count if !server.running?
-          return count if max_active_workers && (active_count >= max_active_workers)
-          slice = input.next_slice(server.name)
-          break unless slice
-          count += process_slice(worker, slice)
+          break if server.shutting_down?
+          if throttle_exceeded?
+            skip_this_job = true
+            break
+          end
 
-          # If the slice has failed and there are no other queued slices, fail the job
-          if slice.failed? && (input.queued_count == 0)
-            fail!
-            return count
+          if slice = input.next_slice(server.name)
+            # Process slices and only check completion if work was successful
+            if process_slice(worker, slice) > 0
+              check_completion(worker)
+              break if completed?
+            end
+
+            # If the slice has failed and there are no other queued slices, fail the job
+            if slice.failed? && (input.queued_count == 0)
+              fail!
+              break
+            end
+          else
+            skip_this_job = true
+            break
           end
 
           # Allow new jobs with a higher priority to interrupt this job worker
-          return count if (Time.now - start_time) >= Config.instance.re_check_seconds
+          break if (Time.now - start_time) >= Config.instance.re_check_seconds
         end
-        # Don't check if not everything has finished processing
-        check_completion(worker)
       rescue Exception => exc
         set_exception(server.name, exc)
         raise exc if RocketJob::Config.inline_mode
       end
-      count
+      skip_this_job
     end
 
     # Prior to a job being made available for processing it can be processed one
@@ -309,6 +317,11 @@ module RocketJob
     # which is made up of the worker class name and the job id
     def default_file_name
       "#{klass_name.underscore}_#{id}"
+    end
+
+    # Returns [Boolean] whether the throttle for this job has been exceeded
+    def throttle_exceeded?
+      max_active_workers ? (input.active_count >= max_active_workers) : false
     end
 
     ############################################################################

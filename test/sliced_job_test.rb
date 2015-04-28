@@ -93,6 +93,10 @@ class SlicedJobTest < Minitest::Test
     end
 
     context '#work' do
+      teardown do
+        @job.destroy if @job
+      end
+
       should 'read all records' do
         @job = Workers::SlicedJob.perform_later do |job|
           assert_equal 0, job.record_count
@@ -143,7 +147,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         count = 0
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
@@ -169,7 +173,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         # New jobs should fail
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         assert_equal @lines.size, @job.input.failed_count
         assert_equal 0, @job.output.count
         assert_equal 0, @job.input.queued_count
@@ -180,7 +184,7 @@ class SlicedJobTest < Minitest::Test
 
         # Should not process failed jobs
         @job.retry!
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         assert_equal @lines.size, @job.input.failed_count
         assert_equal 0, @job.output.count
         assert_equal 0, @job.input.queued_count
@@ -194,7 +198,7 @@ class SlicedJobTest < Minitest::Test
         # Re-process the failed jobs
         @job.perform_method = :perform
         @job.retry!
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
@@ -217,7 +221,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal named_parameters, @job.arguments.first
         assert_equal @lines.size, @job.record_count
 
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         assert_equal true, @job.completed?, @job.inspect
         assert_equal named_parameters.merge('before_event' => true, 'after_event' => true), @job.arguments.first
         assert_equal nil, @job.sub_state
@@ -241,7 +245,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         # New jobs should fail
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count
@@ -255,7 +259,7 @@ class SlicedJobTest < Minitest::Test
         @job.retry!
 
         # Re-process the failed job
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
@@ -276,7 +280,7 @@ class SlicedJobTest < Minitest::Test
         assert_equal @lines.size, @job.record_count
 
         # New jobs should fail
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         assert_equal 0, @job.input.failed_count
         assert_equal 0, @job.output.count
         assert_equal @lines.size, @job.input.queued_count
@@ -288,7 +292,7 @@ class SlicedJobTest < Minitest::Test
         @job.retry!
 
         # Re-process the failed job
-        @job.work(@server)
+        assert_equal false, @job.work(@server)
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
@@ -297,6 +301,57 @@ class SlicedJobTest < Minitest::Test
         assert_equal 0, @job.input.active_count
         assert_equal nil, @job.sub_state
         assert_equal true, @job.completed?, @job.state
+      end
+
+      should "backoff when throttle exceeded" do
+        @job = Workers::SlicedJob.perform_later do |job|
+          assert_equal 0, job.record_count
+          # slice_size has no effect since it is calling #write_slice directly
+          job.slice_size = 1
+          @lines.each { |record| job.upload_slice([record]) }
+        end
+        @job.start!
+
+        assert_equal @lines.size, @job.record_count
+        assert_equal @lines.size, @job.input.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
+        assert_equal nil,         @job.max_active_workers
+        assert_equal false,       @job.throttle_exceeded?
+
+        # Mark all slices as running
+        @job.input.each { |s| s.start; @job.input.update(s) }
+        assert_equal false, @job.throttle_exceeded?
+        @job.max_active_workers = 2
+        assert_equal true, @job.throttle_exceeded?
+
+        assert_equal true, @job.work(@server)
+        assert_equal @lines.size, @job.input.count
+      end
+
+      should "backoff when no work available" do
+        @job = Workers::SlicedJob.perform_later do |job|
+          assert_equal 0, job.record_count
+          # slice_size has no effect since it is calling #write_slice directly
+          job.slice_size = 1
+          @lines.each { |record| job.upload_slice([record]) }
+        end
+        @job.start!
+
+        assert_equal @lines.size, @job.record_count
+        assert_equal @lines.size, @job.input.count
+        assert_equal @lines.size, @job.input.queued_count
+        assert_equal 0,           @job.input.active_count
+        assert_equal 0,           @job.input.failed_count
+        assert_equal nil,         @job.max_active_workers
+        assert_equal false,       @job.throttle_exceeded?
+
+        # Mark all slices as running
+        @job.input.each { |s| s.start; @job.input.update(s) }
+
+        assert_equal true, @job.work(@server)
+        assert_equal @lines.size, @job.input.count
       end
 
     end
@@ -449,12 +504,10 @@ class SlicedJobTest < Minitest::Test
         @job.upload_slice([ @lines.first ])
         @job.upload_slice([ @lines.second ])
         @job.start!
-        count = 0
         # Make worker only process one entry
         RocketJob::Config.instance.stub(:re_check_seconds, 0) do
-          count = @job.work(@server)
+          assert_equal false, @job.work(@server)
         end
-        assert_equal 1, count
 
         stream = StringIO.new('')
         assert_equal true, @job.running?, @job.state
@@ -464,8 +517,7 @@ class SlicedJobTest < Minitest::Test
       should 'handle 1 result' do
         @job.upload_slice([ @lines.first ])
         @job.start!
-        count = @job.work(@server)
-        assert_equal 1, count, @job.inspect
+        assert_equal false, @job.work(@server), @job.inspect
         failures = []
         @job.input.each_failed_record { |r, slice| failures << { slice: slice, record: r } }
         assert_equal 0, @job.input.failed_count, failures
@@ -498,6 +550,37 @@ class SlicedJobTest < Minitest::Test
         job = RocketJob::SlicedJob.new
         assert_equal 'test_rocket_job_work', job.input.collection.db.name
         assert_equal 'test_rocket_job_work', job.output.collection.db.name
+      end
+    end
+
+    context '#throttle_exceeded?' do
+      setup do
+        @job = Workers::SlicedJob.perform_later
+        @job.slice_size = 1
+        slices = @lines.dup
+        @job.upload_records { slices.shift }
+        @job.start!
+        assert_equal false, @job.throttle_exceeded?
+        @job.input.each { |s| s.start; @job.input.update(s) }
+      end
+
+      teardown do
+        @job.destroy
+      end
+
+      should 'not exceed throttle when not set' do
+        assert_equal nil,  @job.max_active_workers
+        assert_equal false, @job.throttle_exceeded?
+      end
+
+      should 'not exceed throttle when set high' do
+        @job.max_active_workers = 2000
+        assert_equal false, @job.throttle_exceeded?
+      end
+
+      should 'exceed throttle' do
+        @job.max_active_workers = 2
+        assert_equal true, @job.throttle_exceeded?
       end
     end
 
