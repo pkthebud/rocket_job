@@ -103,7 +103,7 @@ module RocketJob
         # Download the file from Mongo
         case format
         when :zip
-          raise ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :zip"
+          raise(ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :zip") if encrypt
           zip_filename = options.delete(:zip_filename) || 'file'
           if is_file_name
             RocketJob::Writer::Zip.write_file(file_name_or_io, zip_filename, &writer)
@@ -122,7 +122,7 @@ module RocketJob
             end
           end
         when :gzip
-          raise ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :gzip"
+          raise(ArgumentError, "Option encrypt: #{encrypt.inspect} is not available with format: :gzip") if encrypt
           if is_file_name
             Zlib::GzipWriter.open(file_name_or_io, &writer)
           else

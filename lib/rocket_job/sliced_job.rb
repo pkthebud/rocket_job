@@ -212,6 +212,7 @@ module RocketJob
           # before_perform
           worker.rocket_job_call(perform_method, arguments, event: :before, log_level: log_level)
           processing!
+          check_completion(worker)
         elsif after_processing?
           # previous after_perform failed
           worker.rocket_job_call(perform_method, arguments, event: :after, log_level: log_level)
@@ -408,7 +409,7 @@ module RocketJob
             record_number += 1
             logger.tagged("Rec #{record_number}") do
               if block
-                block.call(*arguments, record, slice)
+                block.call(*arguments, record)
               else
                 worker.send(perform_method, *arguments, record)
               end

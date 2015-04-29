@@ -21,6 +21,7 @@ module RocketJob
         job = build(method, *args, &block)
         if RocketJob::Config.inline_mode
           server = Server.new(name: 'inline')
+          server.started
           job.start
           while job.running?
             job.work(server)
