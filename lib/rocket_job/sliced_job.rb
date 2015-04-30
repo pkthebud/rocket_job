@@ -278,7 +278,10 @@ module RocketJob
       return 100 if completed?
       return 0 unless record_count.to_i > 0
       if collect_output?
-        ((output.count.to_f / record_count) * 100).to_i
+        input_count  = input.count.to_f
+        output_count = output.count.to_f
+        total_count  = input_count + output_count
+        total_count > 0 ? (output_count / total_count * 100).to_i : 0
       else
         # Approximate number of input records
         input_records = input.count.to_f * slice_size
@@ -307,7 +310,7 @@ module RocketJob
           #h[:remaining_minutes] = h[:percent_complete] > 0 ? ((((h[:seconds].to_f / h[:percent_complete]) * 100) - h[:seconds]) / 60).to_i : nil
         #end
       when completed?
-        h[:records_per_hour] = ((record_count.to_f / duration.to_i) * 60 * 60).round if record_count
+        h[:records_per_hour] = ((record_count.to_f / duration.to_f) * 60 * 60).round if record_count && (record_count > 0) && (duration.to_f > 0.0)
         count = output.count if collect_output?
         h[:output_slices]    = count if count
       when queued?
