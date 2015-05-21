@@ -82,6 +82,7 @@ module RocketJob
 
         event :fail do
           transitions from: :running, to: :failed
+          transitions from: :queued,  to: :failed
         end
 
         event :retry do
