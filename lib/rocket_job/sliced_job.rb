@@ -301,6 +301,8 @@ module RocketJob
         h[:queued_slices]    = input.queued_count
         h[:output_slices]    = output.count if collect_output?
         h[:percent_complete] = percent_complete
+        h[:sub_state]        = sub_state
+
         # TODO seconds has been replaced with duration
         #if record_count
           #input_slices         = h[:running_slices] + h[:failed_slices] + h[:queued_slices]
